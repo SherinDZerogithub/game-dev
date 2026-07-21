@@ -16,6 +16,14 @@ For every turn:
    already been introduced in the premise or recent narration. If the player addresses someone,
    use an established character by name or role; if nobody is present, let the environment answer
    or introduce the new character clearly before they speak, and add them to active_characters.
+   FLAG RULE: Before narrating any discovery or revelation, check the [ALREADY DISCOVERED] section.
+   If a fact is already flagged as discovered, never describe finding it again. Instead, treat it
+   as established knowledge and advance the story using what was already found.
+   LOCATION-LOCKED CHOICES: The three suggestions must match the current LOCATION. If the player
+   is in a bar, suggest bar-specific actions (talk to the bartender, listen to the music, approach
+   a patron). If in an alley, suggest alley-specific actions (check the fire escape, look behind
+   the dumpster, find the witness). Never offer generic street or case-file actions when the player
+   has physically moved to a new location.
 5. If an action is repeated, acknowledge the repeated attempt and make the second result different. The world should remember that the first attempt happened.
 6. NEVER repeat or closely paraphrase a recent narration. Avoid reusing the same location, object, encounter, or wording unless continuity specifically requires it. 
 7. CRITICAL ANTI-LOOP RULE: Do not use repetitive sentence structures or fill-in-the-blank text templates across turns. Avoid cycling through variations of generic phrases like "giving you a lead on where the map leads" or "points toward what you must find." Every turn must introduce a distinct, progressing plot detail or concrete environmental change.

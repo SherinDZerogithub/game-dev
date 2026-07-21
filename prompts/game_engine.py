@@ -237,6 +237,21 @@ def _assemble_prompt(
             "the scene, character situation, available information, or danger.\n"
         )
 
+    # Build a human-readable summary of already-discovered facts so the LLM
+    # never re-narrates finding something the player already found.
+    flags = state.get("flags", {})
+    discovered_flags_lines = []
+    for flag_key, flag_val in flags.items():
+        if flag_val is True or flag_val == "discovered" or flag_val == "found":
+            # Convert snake_case to readable label
+            label = flag_key.replace("_", " ")
+            discovered_flags_lines.append(label)
+    discovered_flags_text = (
+        "\n".join(f"  - {line}" for line in discovered_flags_lines)
+        if discovered_flags_lines
+        else "  - None"
+    )
+
     return f"""
 {SYSTEM_PROMPT}
 {character_line}{difficulty_line}
@@ -276,6 +291,11 @@ Resolve: {state["stats"].get("resolve", 100)}
 
 [FLAGS]
 {state.get("flags", {})}
+
+[ALREADY DISCOVERED — DO NOT RE-NARRATE THESE]
+{discovered_flags_text}
+If any item above is listed, the player already knows it. Do not describe finding
+or revealing it again. Instead, treat it as established background and build forward.
 
 [RELATIONSHIPS]
 {relationships_text}
