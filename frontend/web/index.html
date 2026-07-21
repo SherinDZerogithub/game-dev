@@ -1,0 +1,1477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lumen — AI Storyteller</title>
+<meta name="description" content="Lumen — an AI-driven interactive story engine. Every scene is illustrated and re-written in real time from what you type." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* ============================================================
+     ROOT VARIABLES
+     ============================================================ */
+  :root {
+    --bg-0: #0a0b10;
+    --bg-1: #11131c;
+    --panel: rgba(20, 22, 32, 0.62);
+    --panel-solid: #14161f;
+    --panel-2: rgba(28, 31, 44, 0.55);
+    --border: rgba(255, 255, 255, 0.10);
+    --border-strong: rgba(255, 255, 255, 0.20);
+    --ink: #f4f1ea;
+    --ink-soft: #c9c6c0;
+    --muted: #8b8a93;
+    --accent: #e8b4d0;       /* soft rose */
+    --accent-2: #c9a8e8;     /* lilac */
+    --accent-3: #8fb8d4;     /* dusty blue */
+    --gold: #e8c98b;
+    --danger: #e07a8a;
+    --good: #9dd4a6;
+    --serif: 'Fraunces', Georgia, serif;
+    --mono: 'Inter', system-ui, sans-serif;
+    --radius: 18px;
+    --shadow: 0 24px 70px rgba(0,0,0,0.55);
+  }
+
+  /* ============================================================
+     RESET & BASE
+     ============================================================ */
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--mono);
+    color: var(--ink);
+    background: var(--bg-0);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 22px 14px 60px;
+    overflow-x: hidden;
+  }
+
+  /* ============================================================
+     FULL-BLEED SCENE BACKGROUND  (changes per scene, crossfades)
+     ============================================================ */
+  #sceneBgLayer {
+    position: fixed;
+    inset: 0;
+    z-index: -3;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    opacity: 0;
+    transition: opacity 1.4s ease;
+    transform: scale(1.08);
+  }
+  #sceneBgLayer.visible { opacity: 1; }
+
+  /* second layer for crossfade */
+  #sceneBgNext {
+    position: fixed;
+    inset: 0;
+    z-index: -4;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    opacity: 0;
+    transition: opacity 1.4s ease;
+  }
+
+  /* DARK OVERLAY LAYERS — keep text readable over any image */
+  #darkOverlay {
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    background:
+      radial-gradient(120% 90% at 50% -10%, rgba(20,22,32,0.35) 0%, rgba(10,11,16,0.78) 60%, rgba(8,9,13,0.92) 100%),
+      linear-gradient(180deg, rgba(10,11,16,0.55) 0%, rgba(10,11,16,0.72) 40%, rgba(8,9,13,0.92) 100%);
+  }
+  #grainOverlay {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    opacity: 0.05;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  }
+
+  /* default ambient gradient before any image loads */
+  body.pre-scene #sceneBgLayer {
+    opacity: 1;
+    background:
+      radial-gradient(110% 80% at 20% 0%, rgba(201,168,232,0.18) 0%, rgba(10,11,16,0) 55%),
+      radial-gradient(120% 90% at 90% 20%, rgba(232,180,208,0.14) 0%, rgba(10,11,16,0) 50%),
+      radial-gradient(100% 100% at 50% 120%, rgba(143,184,212,0.12) 0%, rgba(10,11,16,0) 60%),
+      linear-gradient(160deg, #0c0d14 0%, #0a0b10 60%, #08090d 100%);
+  }
+
+  /* ============================================================
+     MAIN FRAME
+     ============================================================ */
+  .frame {
+    width: 100%;
+    max-width: 1040px;
+    background: var(--panel);
+    backdrop-filter: blur(22px) saturate(1.15);
+    -webkit-backdrop-filter: blur(22px) saturate(1.15);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    position: relative;
+    animation: frameRise 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  @keyframes frameRise {
+    from { opacity: 0; transform: translateY(18px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ============================================================
+     TITLE BAR
+     ============================================================ */
+  .titlebar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 22px;
+    background: linear-gradient(135deg, rgba(232,180,208,0.10), rgba(201,168,232,0.08));
+    border-bottom: 1px solid var(--border);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: 17px;
+    letter-spacing: 0.01em;
+    color: var(--ink);
+  }
+  .brand .mark {
+    width: 26px; height: 26px;
+    display: grid; place-items: center;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow: 0 0 18px rgba(232,180,208,0.35);
+  }
+  .brand .mark svg { width: 16px; height: 16px; }
+  .brand small {
+    display: block;
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-top: 1px;
+  }
+  .titlebar .status {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 7px;
+    font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600;
+  }
+  .pulse-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--good);
+    box-shadow: 0 0 10px var(--good);
+    animation: pulseDot 2s ease-in-out infinite;
+  }
+  @keyframes pulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  /* ============================================================
+     LAYOUT
+     ============================================================ */
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 288px;
+    min-height: 560px;
+  }
+  @media (max-width: 760px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+
+  .main {
+    padding: 26px 28px 20px;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  /* ============================================================
+     SETUP PANEL
+     ============================================================ */
+  .setup { display: flex; flex-direction: column; gap: 18px; }
+
+  .hero {
+    text-align: left;
+  }
+  .hero h1 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(1.8rem, 4vw, 2.5rem);
+    line-height: 1.08;
+    margin: 0 0 10px;
+    letter-spacing: -0.01em;
+    background: linear-gradient(120deg, #f4f1ea 0%, var(--accent) 55%, var(--accent-2) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .hero p {
+    margin: 0;
+    color: var(--ink-soft);
+    font-size: 14px;
+    line-height: 1.6;
+    max-width: 52ch;
+  }
+
+  .field-label {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--muted);
+    font-weight: 700;
+    display: flex; align-items: center; gap: 7px;
+    margin-bottom: 9px;
+  }
+  .field-label svg { width: 13px; height: 13px; color: var(--accent); }
+
+  /* preset cards */
+  .presets {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
+  }
+  .preset-card {
+    position: relative;
+    text-align: left;
+    cursor: pointer;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px 14px 13px;
+    color: var(--ink-soft);
+    transition: transform 0.22s ease, border-color 0.22s ease, background 0.22s ease, box-shadow 0.22s ease;
+    overflow: hidden;
+    font-family: var(--mono);
+  }
+  .preset-card::before {
+    content: "";
+    position: absolute; inset: 0;
+    background: linear-gradient(135deg, rgba(232,180,208,0.0), rgba(201,168,232,0.0));
+    transition: background 0.3s ease;
+  }
+  .preset-card:hover {
+    transform: translateY(-3px);
+    border-color: var(--border-strong);
+    background: rgba(38, 41, 56, 0.6);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+  }
+  .preset-card.selected {
+    border-color: var(--accent);
+    background: rgba(232,180,208,0.10);
+    box-shadow: 0 0 0 1px var(--accent) inset, 0 12px 34px rgba(232,180,208,0.18);
+  }
+  .preset-card .pi {
+    width: 30px; height: 30px;
+    border-radius: 9px;
+    display: grid; place-items: center;
+    background: linear-gradient(135deg, rgba(232,180,208,0.18), rgba(201,168,232,0.18));
+    color: var(--accent);
+    margin-bottom: 10px;
+  }
+  .preset-card .pi svg { width: 17px; height: 17px; }
+  .preset-card .pn {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--ink);
+    margin-bottom: 3px;
+    position: relative;
+  }
+  .preset-card .pt {
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--muted);
+    position: relative;
+  }
+
+  /* textarea + selects */
+  .setup textarea,
+  .setup select {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 14px;
+    font-family: var(--mono);
+    font-size: 13.5px;
+    color: var(--ink);
+    transition: border-color 0.25s ease, box-shadow 0.25s ease;
+  }
+  .setup textarea::placeholder, .setup select { color: var(--muted); }
+  .setup textarea:focus, .setup select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(232,180,208,0.14);
+  }
+  .setup textarea { min-height: 84px; resize: vertical; line-height: 1.55; }
+  .setup select { appearance: none; cursor: pointer;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b8a93' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");
+    background-repeat: no-repeat; background-position: right 14px center; padding-right: 36px;
+  }
+
+  .setup-row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .setup-row > * { flex: 1; min-width: 150px; }
+
+  /* toggle */
+  .toggle-row {
+    display: flex; align-items: center; gap: 11px;
+    font-size: 12.5px; color: var(--ink-soft);
+    padding: 3px 0;
+  }
+  .toggle-row .tl { display: flex; flex-direction: column; }
+  .toggle-row .tl b { font-weight: 600; color: var(--ink); }
+  .toggle-row .tl span { font-size: 11px; color: var(--muted); }
+  .switch {
+    width: 46px; height: 25px; border-radius: 999px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid var(--border-strong);
+    position: relative; cursor: pointer; flex-shrink: 0;
+    transition: all 0.3s ease;
+  }
+  .switch .knob {
+    position: absolute; top: 2px; left: 2px;
+    width: 19px; height: 19px; border-radius: 50%;
+    background: var(--muted);
+    transition: transform 0.3s ease, background 0.3s ease;
+  }
+  .switch.on { background: linear-gradient(135deg, var(--accent), var(--accent-2)); border-color: transparent; }
+  .switch.on .knob { transform: translateX(21px); background: #fff; }
+
+  /* primary button */
+  button.primary {
+    align-self: flex-start;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #1a1020;
+    border: none;
+    border-radius: 999px;
+    padding: 13px 34px;
+    font-family: var(--serif);
+    font-size: 14.5px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 8px 26px rgba(232,180,208,0.32);
+    transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+    display: inline-flex; align-items: center; gap: 9px;
+  }
+  button.primary:hover { transform: translateY(-2px); box-shadow: 0 12px 34px rgba(232,180,208,0.45); }
+  button.primary:disabled { opacity: 0.55; cursor: default; transform: none; }
+  button.primary svg { width: 16px; height: 16px; }
+
+  .hint-line { color: var(--muted); font-size: 12px; line-height: 1.55; display:flex; align-items:center; gap:7px; }
+  .hint-line svg { width: 13px; height: 13px; color: var(--accent-3); }
+
+  /* ============================================================
+     STORY PANEL
+     ============================================================ */
+  .story { display: none; flex-direction: column; flex: 1; gap: 13px; min-height: 620px; }
+  .story.visible { display: flex; animation: fadeIn 0.5s ease; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  .log {
+    flex: 1;
+    overflow-y: auto;
+    max-height: 72vh;
+    padding-right: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    scroll-behavior: smooth;
+  }
+  .log::-webkit-scrollbar { width: 7px; }
+  .log::-webkit-scrollbar-track { background: transparent; }
+  .log::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 4px; }
+
+  /* player message */
+  .player-line { text-align: right; margin: 2px 0; animation: slideR 0.35s ease; }
+  @keyframes slideR { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: translateX(0); } }
+  .player-line span {
+    display: inline-block;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #1a1020;
+    padding: 9px 18px;
+    border-radius: 16px 16px 4px 16px;
+    font-weight: 600;
+    font-size: 13px;
+    max-width: 85%;
+    text-align: left;
+    box-shadow: 0 6px 20px rgba(232,180,208,0.22);
+  }
+
+  /* narration scene */
+  .scene {
+    position: relative;
+    flex-shrink: 0;
+    background: var(--panel-2);
+    border-radius: 16px;
+    border: 1px solid var(--border);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.30);
+    overflow: hidden;
+    animation: develop 0.55s cubic-bezier(0.2,0.8,0.2,1) both;
+    isolation: isolate;
+  }
+  .scene.has-image {
+    /* Keep the illustration and narration as two visible sections. The
+       narration scrolls inside the card instead of letting the grid row
+       collapse to zero height. */
+    display: flex;
+    flex-direction: column;
+  }
+  @keyframes develop { from { opacity: 0; transform: translateY(10px) scale(0.99); } to { opacity: 1; transform: translateY(0) scale(1); } }
+
+  .scene.has-image::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background-image:
+      linear-gradient(180deg, rgba(20,22,32,0.88) 0%, rgba(20,22,32,0.66) 52%, rgba(20,22,32,0.92) 100%),
+      var(--scene-image);
+    background-size: cover;
+    background-position: center;
+    opacity: 0;
+    transform: scale(1.04);
+    transition: opacity 0.65s ease;
+  }
+  .scene.has-image.image-ready::before { opacity: 0.18; }
+  .scene > * { position: relative; z-index: 1; }
+
+  /* scene-local image above the narration with its own dark overlay */
+  .scene .scene-img {
+    position: relative;
+    height: clamp(180px, 28vh, 240px);
+    min-height: 180px;
+    margin: 16px 16px 0;
+    background:
+      radial-gradient(120% 100% at 20% 0%, rgba(232,180,208,0.16), transparent 55%),
+      radial-gradient(100% 90% at 90% 20%, rgba(143,184,212,0.14), transparent 50%),
+      rgba(255,255,255,0.035);
+    background-size: cover, cover, auto;
+    background-position: center;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.035), 0 12px 30px rgba(0,0,0,0.24);
+    transition: opacity 0.45s ease;
+  }
+  .scene .scene-img::after {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      linear-gradient(180deg, rgba(20,22,32,0.16) 0%, rgba(10,11,16,0.12) 45%, rgba(10,11,16,0.34) 100%),
+      linear-gradient(90deg, rgba(10,11,16,0.36) 0%, transparent 22%, transparent 78%, rgba(10,11,16,0.34) 100%);
+  }
+  .scene.no-image .scene-img { display: none; }
+
+  .scene .body { padding: 18px 24px 16px; }
+  .scene.has-image .body {
+    margin: 0 16px 4px;
+    padding: 16px 8px 14px;
+    height: 235px;
+    min-height: 235px;
+    max-height: 235px;
+    flex: 0 0 235px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.18) transparent;
+  }
+  .scene.has-image .body::-webkit-scrollbar { width: 7px; }
+  .scene.has-image .body::-webkit-scrollbar-track { background: transparent; }
+  .scene.has-image .body::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.16);
+    border-radius: 4px;
+  }
+  .scene .body.meta-wrap { padding: 12px 20px 15px; }
+  .scene.has-image .body.meta-wrap {
+    margin: 0;
+    padding: 10px 20px 15px;
+    overflow: visible;
+  }
+  .scene .scene-tag-inline {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .scene .scene-tag-inline svg { width: 13px; height: 13px; color: var(--accent); }
+  .scene .narration {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 17px;
+    line-height: 1.8;
+    color: var(--ink);
+    margin: 0 0 8px;
+    white-space: pre-wrap;
+  }
+  .scene .narration::first-letter {
+    font-size: 1.5em; font-weight: 600; color: var(--accent);
+  }
+  .scene .meta {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 10px;
+  }
+  .scene .timestamp { font-size: 10.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .scene .timestamp svg { width: 12px; height: 12px; }
+
+  .scene .hints {
+    font-family: var(--mono); font-weight: 600; font-size: 11.5px;
+    color: var(--accent-2);
+    padding: 7px 13px;
+    background: rgba(201,168,232,0.10);
+    border: 1px solid rgba(201,168,232,0.18);
+    border-radius: 9px;
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+  .scene .hints svg { width: 13px; height: 13px; }
+
+  .scene.twist {
+    border-color: var(--gold);
+    box-shadow: 0 0 0 1px rgba(232,201,139,0.35) inset, 0 10px 34px rgba(232,201,139,0.14);
+  }
+  .scene.twist .scene-img::after {
+    background: linear-gradient(180deg, rgba(40,30,10,0.10), rgba(30,24,10,0.55) 60%, rgba(20,22,32,0.92));
+  }
+
+  /* game over */
+  .gameover-banner {
+    color: var(--danger);
+    border: 1px dashed var(--danger);
+    border-radius: 14px;
+    padding: 16px 20px;
+    font-family: var(--serif);
+    font-weight: 600;
+    text-align: center;
+    background: rgba(224,122,138,0.07);
+  }
+
+  /* input row */
+  .input-row {
+    display: flex; align-items: center; gap: 10px;
+    border-top: 1px solid var(--border);
+    padding-top: 16px; margin-top: 6px;
+  }
+  .prompt-glyph { color: var(--accent); font-size: 18px; font-weight: 700; }
+  .input-row input {
+    flex: 1; background: transparent; border: none;
+    color: var(--ink); font-family: var(--mono); font-weight: 500; font-size: 14px;
+    padding: 7px 0; caret-color: var(--accent);
+  }
+  .input-row input:focus { outline: none; }
+  .input-row input::placeholder { color: var(--muted); }
+  .input-row input:disabled { opacity: 0.4; }
+  .send-btn {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid var(--border);
+    color: var(--ink-soft);
+    border-radius: 10px; padding: 8px 12px; cursor: pointer;
+    display: grid; place-items: center;
+    transition: all 0.2s ease;
+  }
+  .send-btn:hover { background: rgba(232,180,208,0.16); color: var(--accent); border-color: var(--border-strong); }
+  .send-btn svg { width: 16px; height: 16px; }
+  .send-btn:disabled { opacity: 0.4; cursor: default; }
+
+  .cursor { display: inline-block; width: 8px; height: 16px; background: var(--accent); animation: blink 1s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* choice cards */
+  .choices-wrap { margin: 6px 0 4px; }
+  .choices-label {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.18em;
+    color: var(--muted); font-weight: 700; margin-bottom: 9px;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .choices-label svg { width: 13px; height: 13px; color: var(--accent); }
+  .choices-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 9px; }
+  .choice-card {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 14px;
+    cursor: pointer;
+    font-size: 12.5px; font-weight: 500;
+    color: var(--ink-soft);
+    transition: all 0.2s ease;
+    text-align: left;
+    font-family: var(--mono);
+    display: flex; align-items: center; gap: 10px;
+    line-height: 1.4;
+  }
+  .choice-card:hover {
+    background: rgba(232,180,208,0.10);
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 22px rgba(0,0,0,0.30);
+    color: var(--ink);
+  }
+  .choice-card .ci {
+    width: 26px; height: 26px; flex-shrink: 0;
+    border-radius: 8px; display: grid; place-items: center;
+    background: linear-gradient(135deg, rgba(232,180,208,0.16), rgba(201,168,232,0.16));
+    color: var(--accent);
+  }
+  .choice-card .ci svg { width: 14px; height: 14px; }
+
+  /* thinking */
+  .thinking {
+    color: var(--muted); font-size: 12.5px;
+    display: flex; align-items: center; gap: 9px;
+    padding: 4px 2px;
+  }
+  .thinking .dots { display: inline-flex; gap: 4px; }
+  .thinking .dots i {
+    width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+    animation: bounce 1.2s infinite ease-in-out;
+  }
+  .thinking .dots i:nth-child(2) { animation-delay: 0.15s; }
+  .thinking .dots i:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes bounce { 0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
+
+  /* error */
+  .error-box {
+    background: rgba(224,122,138,0.10);
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    border-radius: 11px; padding: 11px 15px;
+    font-size: 12.5px; margin-top: 8px;
+    display: flex; align-items: center; gap: 9px;
+  }
+  .error-box svg { width: 15px; height: 15px; flex-shrink: 0; }
+
+  /* achievement toast */
+  .achievement-toast {
+    position: fixed; top: 22px; right: 22px; z-index: 999;
+    background: linear-gradient(135deg, rgba(28,31,44,0.95), rgba(20,22,32,0.95));
+    backdrop-filter: blur(14px);
+    color: var(--ink);
+    padding: 14px 20px;
+    border-radius: 14px;
+    font-family: var(--serif); font-weight: 600; font-size: 13.5px;
+    box-shadow: 0 14px 40px rgba(0,0,0,0.5);
+    border: 1px solid var(--gold);
+    animation: toastIn 0.5s ease, toastOut 0.5s ease 3.6s forwards;
+    display: flex; align-items: center; gap: 12px;
+    max-width: 320px;
+  }
+  .achievement-toast .ti {
+    width: 32px; height: 32px; border-radius: 9px; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--gold), var(--accent));
+    display: grid; place-items: center; color: #1a1020;
+  }
+  .achievement-toast .ti svg { width: 18px; height: 18px; }
+  .achievement-toast small { display: block; font-family: var(--mono); font-weight: 600; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--gold); }
+  @keyframes toastIn { from { transform: translateX(120%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+  @keyframes toastOut { to { transform: translateX(40px); opacity: 0; } }
+
+  /* twist note */
+  .twist-note {
+    font-size: 11.5px; color: var(--gold); text-align: center; padding: 6px 0;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    letter-spacing: 0.04em;
+  }
+  .twist-note svg { width: 14px; height: 14px; }
+
+  /* ============================================================
+     SIDEBAR
+     ============================================================ */
+  .sidebar {
+    background: rgba(14,15,22,0.5);
+    border-left: 1px solid var(--border);
+    padding: 22px 18px;
+    font-size: 12px;
+  }
+  @media (max-width: 760px) {
+    .sidebar { border-left: none; border-top: 1px solid var(--border); }
+  }
+  .sidebar .section { margin-bottom: 20px; }
+  .sidebar h3 {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.2em;
+    color: var(--accent); font-weight: 700; margin: 0 0 10px;
+    font-family: var(--mono);
+    display: flex; align-items: center; gap: 7px;
+  }
+  .sidebar h3 svg { width: 12px; height: 12px; }
+
+  .char-card {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 13px;
+  }
+  .char-card .role {
+    font-family: var(--serif); font-weight: 600; font-size: 14px; color: var(--ink);
+    margin-bottom: 3px;
+  }
+  .char-card .sub { font-size: 11px; color: var(--muted); }
+
+  .stat-row { display: flex; justify-content: space-between; padding: 3px 0 1px; font-weight: 600; font-size: 12px; align-items: center; }
+  .stat-row .k { color: var(--ink-soft); font-weight: 500; display: flex; align-items: center; gap: 6px; }
+  .stat-row .k svg { width: 12px; height: 12px; color: var(--accent); }
+  .stat-row .v { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .stat-bar { width: 100%; height: 7px; background: rgba(255,255,255,0.07); border-radius: 999px; overflow: hidden; margin: 3px 0 9px; }
+  .stat-bar-fill { height: 100%; border-radius: 999px; transition: width 0.9s cubic-bezier(0.2,0.8,0.2,1); }
+  .stat-bar-fill.hp { background: linear-gradient(90deg, #e07a8a, #e8b4d0); }
+  .stat-bar-fill.resolve { background: linear-gradient(90deg, #8fb8d4, #c9a8e8); }
+
+  .chip-list { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip-list li {
+    background: rgba(232,180,208,0.10);
+    border: 1px solid rgba(232,180,208,0.18);
+    border-radius: 999px; padding: 4px 11px; font-size: 11px; font-weight: 600; color: var(--accent);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .chip-list li svg { width: 10px; height: 10px; }
+  .flag-list { list-style: none; padding: 0; margin: 0; }
+  .flag-list li { color: var(--ink-soft); font-size: 11.5px; padding: 4px 0; display: flex; align-items: center; gap: 8px; }
+  .flag-list li svg { width: 11px; height: 11px; color: var(--gold); flex-shrink: 0; }
+  .empty-note { color: var(--muted); font-style: italic; font-size: 11px; }
+
+  .twist-meter {
+    background: var(--panel-2); border-radius: 12px; padding: 12px 13px;
+    border: 1px solid var(--border); font-size: 11.5px; color: var(--ink-soft);
+  }
+  .twist-meter .row { display: flex; justify-content: space-between; padding: 2px 0; }
+  .twist-meter .row b { color: var(--ink); font-weight: 600; }
+  .twist-meter.high { border-color: var(--gold); box-shadow: 0 0 18px rgba(232,201,139,0.16); animation: twistGlow 2s ease-in-out infinite; }
+  @keyframes twistGlow { 0%,100% { box-shadow: 0 0 12px rgba(232,201,139,0.10); } 50% { box-shadow: 0 0 24px rgba(232,201,139,0.22); } }
+
+  .ghost-btn {
+    background: transparent; border: 1px solid var(--border-strong); color: var(--ink-soft);
+    border-radius: 999px; padding: 7px 14px; font-size: 11px; cursor: pointer; width: 100%;
+    font-family: var(--mono); transition: all 0.2s ease;
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+  }
+  .ghost-btn:hover { background: rgba(255,255,255,0.06); color: var(--ink); }
+  .ghost-btn:disabled { opacity: 0.45; cursor: default; }
+  .ghost-btn svg { width: 13px; height: 13px; }
+  .story-actions { display: grid; gap: 8px; }
+  .ghost-btn.accent {
+    background: rgba(232,180,208,0.10);
+    border-color: rgba(232,180,208,0.28);
+    color: var(--accent);
+  }
+  .ghost-btn.accent:hover { background: rgba(232,180,208,0.16); color: var(--ink); }
+
+  /* footer credit */
+  .foot {
+    text-align: center; color: var(--muted); font-size: 10.5px;
+    letter-spacing: 0.1em; padding: 10px 0 0; margin-top: auto;
+  }
+</style>
+<script src="https://sites.super.myninja.ai/_assets/ninja-daytona-script.js"></script>
+</head>
+<body class="pre-scene">
+
+<!-- BACKGROUND LAYERS -->
+<div id="sceneBgNext"></div>
+<div id="sceneBgLayer"></div>
+<div id="darkOverlay"></div>
+<div id="grainOverlay"></div>
+
+<!-- MAIN FRAME -->
+<div class="frame">
+
+  <!-- TITLE BAR -->
+  <div class="titlebar">
+    <div class="brand">
+      <span class="mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#1a1020" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3a6 6 0 0 0 0 12 6 6 0 0 0 0-12z"/><path d="M12 15v6"/><path d="M9 21h6"/>
+        </svg>
+      </span>
+      <span>Lumen<small>AI Storyteller</small></span>
+    </div>
+    <div class="status"><span class="pulse-dot"></span> narrator online</div>
+  </div>
+
+  <!-- LAYOUT -->
+  <div class="layout">
+
+    <!-- MAIN COLUMN -->
+    <div class="main">
+
+      <!-- SETUP PANEL -->
+      <div class="setup" id="setup">
+        <div class="hero">
+          <h1>Write your own story.<br>One line at a time.</h1>
+          <p>Lumen is an AI narrator that illustrates and re-writes every scene in real time from whatever you type. Pick a starting world below, or write your own — then just play.</p>
+        </div>
+
+        <div>
+          <div class="field-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            Choose a starting world
+          </div>
+          <div class="presets" id="presets"></div>
+        </div>
+
+        <div>
+          <div class="field-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+            Opening scenario
+          </div>
+          <textarea id="opening">You arrive at a quiet coastal town at dusk with a sealed letter in hand and no memory of writing it.</textarea>
+        </div>
+
+        <div class="setup-row">
+          <div>
+            <div class="field-label">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>
+              Character archetype
+            </div>
+            <select id="charClass">
+              <option value="">Free spirit (no archetype)</option>
+              <option value="a sharp-witted detective">Sharp-witted detective</option>
+              <option value="a guarded scholar">Guarded scholar</option>
+              <option value="a restless wanderer">Restless wanderer</option>
+              <option value="a reluctant heir">Reluctant heir</option>
+              <option value="a curious cartographer">Curious cartographer</option>
+              <option value="a quiet romantic">Quiet romantic</option>
+            </select>
+          </div>
+          <div>
+            <div class="field-label">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg>
+              Pacing
+            </div>
+            <select id="difficulty">
+              <option value="Gentle">Gentle</option>
+              <option value="Balanced" selected>Balanced</option>
+              <option value="Intense">Intense</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="toggle-row">
+          <div class="switch" id="chaosSwitch"><div class="knob"></div></div>
+          <div class="tl">
+            <b>Twist Mode</b>
+            <span>Unexpected turns bend the story more often.</span>
+          </div>
+        </div>
+
+        <button class="primary" id="startBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          Begin the story
+        </button>
+        <div class="hint-line">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.663 17h4.673M12 3v1m6.36 1.64-.7.7M21 12h-1M4 12H3m3.34-5.66-.7-.7M8.5 14a5 5 0 1 1 7 0"/><path d="M12 17a2 2 0 0 0-2 2v2h4v-2a2 2 0 0 0-2-2z"/></svg>
+          Type any action — the narrator adapts to everything. The three suggestions are just ideas.
+        </div>
+        <div id="startError"></div>
+      </div>
+
+      <!-- STORY PANEL -->
+      <div class="story" id="story">
+        <div class="log" id="log"></div>
+        <div id="gameoverBanner"></div>
+
+        <div class="choices-wrap" id="choicesContainer" style="display:none;">
+          <div class="choices-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>
+            What do you do next?
+          </div>
+          <div class="choices-grid" id="choicesGrid"></div>
+        </div>
+        <div class="hint-line" style="text-align:center; justify-content:center; margin:2px 0 8px;">
+          Suggestions are optional — feel free to type anything.
+        </div>
+
+        <div class="input-row" id="inputRow">
+          <span class="prompt-glyph">&gt;</span>
+          <input id="playerInput" type="text" maxlength="3000" placeholder="Describe what you do next…" autocomplete="off" />
+          <button class="send-btn" id="sendBtn" aria-label="Send">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- SIDEBAR -->
+    <div class="sidebar">
+      <div class="section">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>Character</h3>
+        <div class="char-card">
+          <div class="role" id="characterDisplay">—</div>
+          <div class="sub" id="characterSub">Not yet begun</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7h-9M14 17H5M17 7a3 3 0 1 0-6 0M9 17a3 3 0 1 0 6 0"/></svg>Vitals</h3>
+        <div id="statsBlock"></div>
+      </div>
+
+      <div class="section">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12V8H6a2 2 0 0 1 0-4h12v4M4 6v12a2 2 0 0 0 2 2h14v-4M18 12a2 2 0 0 0 0 4h4v-4z"/></svg>Possessions</h3>
+        <ul class="chip-list" id="invList"><li class="empty-note">empty</li></ul>
+      </div>
+
+      <div class="section">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>Twist meter</h3>
+        <div class="twist-meter" id="twistMeter">
+          <div class="row"><b>Mode</b><span id="twistModeDisplay">Stable</span></div>
+          <div class="row"><b>Twist chance</b><span id="twistChance">12%</span></div>
+          <div class="row"><b>Turn</b><span id="turnCount">0</span></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>Story threads</h3>
+        <ul class="flag-list" id="flagList"><li class="empty-note">none yet</li></ul>
+      </div>
+
+      <div class="section story-actions" style="border-top:1px solid var(--border); padding-top:14px;">
+        <button class="ghost-btn accent" id="newGameBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+          New game
+        </button>
+        <button class="ghost-btn" id="homeBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>
+          Back home
+        </button>
+        <button class="ghost-btn" id="clearLogBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          Clear log
+        </button>
+      </div>
+
+      <div class="foot">LUMEN · v2.0 · AI STORYTELLER</div>
+    </div>
+
+  </div><!-- /layout -->
+</div><!-- /frame -->
+
+<script>
+// ============================================================
+// CONFIG
+// ============================================================
+const API_BASE = "";
+
+let sessionId = null;
+let chaosMode = false;
+let isProcessing = false;
+let lastChoices = [];
+let selectedPresetId = null;
+
+// ============================================================
+// SVG ICON LIBRARY (inline — no emojis)
+// ============================================================
+const ICONS = {
+  book:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
+  pen:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
+  user:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>',
+  pulse:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg>',
+  city:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V7l5-4v18M9 9h.01M9 12h.01M9 15h.01M14 21V11l7-4v14M17 13h.01M17 17h.01"/></svg>',
+  letter: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 5L2 7"/></svg>',
+  lighthouse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v2M12 22v-4M5 22h14M12 4a2 2 0 0 0-2 2v2h4V6a2 2 0 0 0-2-2zM10 8h4l1 4h-6zM9 12h6l1 6H8z"/><path d="M4 11 2 13M20 11l2 2"/></svg>',
+  signal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20h.01M7 20v-4M12 20v-8M17 20V8M22 4v16"/></svg>',
+  compass:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>',
+  moon:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
+  play:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
+  bulb:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.663 17h4.673M12 3v1m6.36 1.64-.7.7M21 12h-1M4 12H3m3.34-5.66-.7-.7M8.5 14a5 5 0 1 1 7 0"/><path d="M12 17a2 2 0 0 0-2 2v2h4v-2a2 2 0 0 0-2-2z"/></svg>',
+  clock:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+  bolt:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>',
+  send:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>',
+  trash:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>',
+  home:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>',
+  restart:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>',
+  heart:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>',
+  diamond:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12l4 6-10 13L2 9z"/><path d="M2 9h20M12 22 8 9l4-6 4 6z"/></svg>',
+  star:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
+  trophy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0zM7 4H4v3a3 3 0 0 0 3 3M17 4h3v3a3 3 0 0 1-3 3"/></svg>',
+  error:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
+  gem:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12l4 6-10 13L2 9z"/></svg>',
+  // action icons for choice cards
+  go:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  talk:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>',
+  look:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+  fight:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 17.5 3 6V3h3l11.5 11.5"/><path d="m13 19 6-6M16 16l4 4M19 21l2-2"/></svg>',
+  take:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 0 1-8 0"/></svg>',
+  think:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/><path d="M9 21h6"/></svg>',
+};
+
+// ============================================================
+// DOM REFS
+// ============================================================
+const $ = id => document.getElementById(id);
+const setupEl = $('setup'); const storyEl = $('story'); const logEl = $('log');
+const playerInput = $('playerInput'); const startBtn = $('startBtn');
+const chaosSwitch = $('chaosSwitch'); const startError = $('startError');
+const gameoverBanner = $('gameoverBanner'); const choicesContainer = $('choicesContainer');
+const choicesGrid = $('choicesGrid'); const clearLogBtn = $('clearLogBtn'); const sendBtn = $('sendBtn');
+const homeBtn = $('homeBtn'); const newGameBtn = $('newGameBtn');
+const sceneBgLayer = $('sceneBgLayer'); const sceneBgNext = $('sceneBgNext');
+const invList = $('invList'); const statsBlock = $('statsBlock'); const flagList = $('flagList');
+const characterDisplay = $('characterDisplay'); const characterSub = $('characterSub');
+const twistModeDisplay = $('twistModeDisplay'); const twistChance = $('twistChance');
+const turnCount = $('turnCount'); const presetsEl = $('presets'); const openingEl = $('opening');
+
+// ============================================================
+// HELPERS
+// ============================================================
+function escapeHtml(str) {
+  if (!str) return '';
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+function getTimestamp() {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+function scrollLogBottom() { logEl.scrollTop = logEl.scrollHeight; }
+
+// choice icon by keyword
+function iconForChoice(hint) {
+  const l = (hint || '').toLowerCase();
+  if (/(go|walk|head|follow|leave|move|run|enter|climb|travel|cross|approach)/.test(l)) return ICONS.go;
+  if (/(talk|ask|say|tell|speak|answer|call|greet|question)/.test(l)) return ICONS.talk;
+  if (/(look|search|examine|inspect|study|observe|watch|read)/.test(l)) return ICONS.look;
+  if (/(fight|attack|strike|defend|block|punch|shoot|weapon)/.test(l)) return ICONS.fight;
+  if (/(take|grab|pick|use|open|drink|eat|grab|carry)/.test(l)) return ICONS.take;
+  return ICONS.think;
+}
+
+// ============================================================
+// PRESETS
+// ============================================================
+async function loadPresets() {
+  try {
+    const res = await fetch(`${API_BASE}/presets`);
+    if (!res.ok) return;
+    const data = await res.json();
+    renderPresets(data.presets || []);
+  } catch (e) { /* offline fallback uses none */ }
+}
+
+const FALLBACK_PRESETS = [
+  { id: "noir", label: "Neon Noir", icon: "city", opening: "Rain streaks the neon of a city that never sleeps. You are a private investigator standing over an unsolved case file at 2 a.m. when the phone rings with a voice from a past you tried to bury." },
+  { id: "romance", label: "Letters from Vienna", icon: "letter", opening: "A sealed letter arrives at your bookshop in a quiet coastal town, postmarked Vienna and written in a hand you have not seen in ten years. It asks you to come. The next train leaves at dawn." },
+  { id: "mystery", label: "The Lighthouse Keeper", icon: "lighthouse", opening: "You arrive to take up the post of lighthouse keeper on a remote island. The previous keeper left no note — only a locked journal and a warning scratched into the door: do not light the beam after midnight. The boat captain, Mara Venn, is still waiting in the lantern room doorway, as if she knows you should not be left alone with the journal." },
+  { id: "scifi", label: "Signal from Andromeda", icon: "signal", opening: "You are the lone comms officer on a deep-space relay station when an impossible signal arrives from a galaxy that should be silent. Mission control is twelve hours away by lightspeed." },
+  { id: "fantasy", label: "The Cartographer's Heir", icon: "compass", opening: "Your grandmother, the kingdom's last royal cartographer, has left you a map of a road that appears on no other chart — and a key cut from a stone that hums when you hold it." },
+  { id: "slice", label: "The Midnight Bakery", icon: "moon", opening: "You inherit a tiny bakery that only opens between midnight and dawn. On your first night, a regular customer arrives who has been coming for thirty years — and who is not, exactly, alive." },
+];
+
+function renderPresets(presets) {
+  const list = (presets && presets.length) ? presets : FALLBACK_PRESETS;
+  presetsEl.innerHTML = '';
+  list.forEach(p => {
+    const card = document.createElement('button');
+    card.className = 'preset-card';
+    card.type = 'button';
+    card.dataset.id = p.id;
+    card.innerHTML = `
+      <div class="pi">${ICONS[p.icon] || ICONS.book}</div>
+      <div class="pn">${escapeHtml(p.label)}</div>
+      <div class="pt">${escapeHtml(truncate(p.opening, 80))}</div>
+    `;
+    card.addEventListener('click', () => {
+      document.querySelectorAll('.preset-card').forEach(c => c.classList.remove('selected'));
+      card.classList.add('selected');
+      selectedPresetId = p.id;
+      openingEl.value = p.opening;
+    });
+    presetsEl.appendChild(card);
+  });
+}
+function truncate(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+
+// ============================================================
+// BACKGROUND CROSSFADE
+// ============================================================
+function setBackground(url) {
+  if (!url) return;
+  // preload then crossfade via the secondary layer
+  const img = new Image();
+  img.onload = () => {
+    document.body.classList.remove('pre-scene');
+    sceneBgNext.style.backgroundImage = `url(${url})`;
+    // fade next in
+    requestAnimationFrame(() => { sceneBgNext.style.opacity = '1'; });
+    // after transition, swap to main and reset next
+    setTimeout(() => {
+      sceneBgLayer.style.backgroundImage = `url(${url})`;
+      sceneBgLayer.classList.add('visible');
+      sceneBgNext.style.opacity = '0';
+    }, 1450);
+  };
+  img.src = url;
+}
+
+// ============================================================
+// SIDEBAR RENDER
+// ============================================================
+function renderSidebar(state) {
+  const role = state.character_class || state.flags?.origin || 'Free spirit';
+  characterDisplay.textContent = role;
+  characterSub.textContent = state.difficulty ? `Pacing · ${state.difficulty}` : 'In progress';
+
+  const inv = state.inventory || [];
+  invList.innerHTML = inv.length
+    ? inv.map(i => `<li>${ICONS.gem}${escapeHtml(i)}</li>`).join('')
+    : '<li class="empty-note">empty</li>';
+
+  const stats = state.stats || {};
+  let statsHtml = '';
+  const meta = {
+    hp:     { label: 'Vitality', icon: ICONS.heart,  cls: 'hp' },
+    resolve:{ label: 'Resolve',  icon: ICONS.diamond, cls: 'resolve' },
+    sanity: { label: 'Resolve',  icon: ICONS.diamond, cls: 'resolve' },
+  };
+  for (const [k, v] of Object.entries(stats)) {
+    const m = meta[k] || { label: k, icon: ICONS.star, cls: 'hp' };
+    const pct = Math.max(0, Math.min(100, Number(v) || 0));
+    statsHtml += `
+      <div class="stat-row">
+        <span class="k">${m.icon} ${escapeHtml(m.label)}</span>
+        <span class="v">${v}</span>
+      </div>
+      <div class="stat-bar"><div class="stat-bar-fill ${m.cls}" style="width:${pct}%;"></div></div>
+    `;
+  }
+  statsBlock.innerHTML = statsHtml || '<div class="empty-note">—</div>';
+
+  const flags = Object.entries(state.flags || {}).filter(([, v]) => v).map(([k]) => k);
+  flagList.innerHTML = flags.length
+    ? flags.map(f => `<li>${ICONS.star}${escapeHtml(f)}</li>`).join('')
+    : '<li class="empty-note">none yet</li>';
+
+  const isChaos = state.chaos_mode || false;
+  const turns = state.turn_count || 0;
+  const baseChance = isChaos ? 0.45 : 0.12;
+  const drift = Math.min(0.2, turns * 0.005);
+  const totalPct = Math.round((baseChance + drift) * 100);
+  twistModeDisplay.textContent = isChaos ? 'High instability' : 'Stable';
+  twistChance.textContent = totalPct + '%';
+  turnCount.textContent = turns;
+  const meter = document.querySelector('.twist-meter');
+  if (isChaos) meter.classList.add('high'); else meter.classList.remove('high');
+}
+
+// ============================================================
+// RENDER SCENE
+// ============================================================
+function renderScene(scene, chaosTriggered, isStart) {
+  const wrap = document.createElement('div');
+  wrap.className = 'scene' + (chaosTriggered ? ' twist' : '');
+
+  const imagePath = scene.image_path || scene.ambient_path;
+  const hasImg = !!imagePath;
+  if (hasImg) wrap.classList.add('has-image');
+  if (!hasImg) wrap.classList.add('no-image');
+
+  const imgDiv = document.createElement('div');
+  imgDiv.className = 'scene-img';
+  if (hasImg) {
+    const url = `${API_BASE}/scene-image?path=${encodeURIComponent(imagePath)}`;
+    const pre = new Image();
+    pre.onload = () => {
+      const sceneImage = `url("${url.replace(/"/g, '\\"')}")`;
+      imgDiv.style.backgroundImage = sceneImage;
+      wrap.style.setProperty('--scene-image', sceneImage);
+      wrap.classList.add('image-ready');
+      scrollLogBottom();
+    };
+    pre.onerror = () => {
+      wrap.classList.remove('has-image', 'image-ready');
+      wrap.classList.add('no-image');
+    };
+    pre.src = url;
+    // also drive the full-bleed background
+    setBackground(url);
+  }
+  wrap.appendChild(imgDiv);
+
+  const body = document.createElement('div');
+  body.className = 'body';
+
+  const tag = document.createElement('div');
+  tag.className = 'scene-tag-inline';
+  tag.innerHTML = `${ICONS.bolt} scene`;
+  body.appendChild(tag);
+
+  const narration = document.createElement('div');
+  narration.className = 'narration';
+  const narrationText = String(scene.narration || '').trim()
+    || 'The scene changes after your last move. A new detail is waiting to be understood, and your next choice will decide which part of it matters.';
+  narration.textContent = narrationText;
+  body.appendChild(narration);
+  wrap.appendChild(body);
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const ts = document.createElement('div');
+  ts.className = 'timestamp';
+  ts.innerHTML = `${ICONS.clock} ${getTimestamp()}`;
+  meta.appendChild(ts);
+
+  if (scene.choices_hint && scene.choices_hint.length) {
+    const hints = document.createElement('div');
+    hints.className = 'hints';
+    hints.innerHTML = `${ICONS.bulb} ${escapeHtml(scene.choices_hint.join('  ·  '))}`;
+    meta.appendChild(hints);
+    lastChoices = scene.choices_hint;
+  } else {
+    lastChoices = [];
+  }
+  const metaWrap = document.createElement('div');
+  metaWrap.className = 'body meta-wrap';
+  metaWrap.appendChild(meta);
+  wrap.appendChild(metaWrap);
+  logEl.appendChild(wrap);
+  scrollLogBottom();
+
+  if (scene.game_over) {
+    gameoverBanner.innerHTML = `<div class="gameover-banner">The story has ended — begin a new tale to keep exploring.</div>`;
+    playerInput.disabled = true; sendBtn.disabled = true;
+  }
+  renderChoices(lastChoices);
+}
+
+// ============================================================
+// CHOICE CARDS
+// ============================================================
+function renderChoices(choices) {
+  choicesGrid.innerHTML = '';
+  if (!choices || !choices.length) { choicesContainer.style.display = 'none'; return; }
+  choicesContainer.style.display = 'block';
+  choices.forEach((hint) => {
+    const card = document.createElement('button');
+    card.className = 'choice-card';
+    card.type = 'button';
+    card.innerHTML = `<span class="ci">${iconForChoice(hint)}</span><span>${escapeHtml(hint)}</span>`;
+    card.addEventListener('click', () => { if (!isProcessing) handlePlayerInput(hint); });
+    choicesGrid.appendChild(card);
+  });
+}
+
+// ============================================================
+// ACHIEVEMENT TOAST
+// ============================================================
+const shownAchievements = new Set();
+const achievementMap = {
+  'found_hidden_path': { name: 'Pathfinder', sub: 'Discovery' },
+  'met_forest_spirit': { name: 'First Contact', sub: 'Encounter' },
+  'collected_all_items': { name: 'Collector', sub: 'Possessions' },
+  'completed_quest': { name: 'Quest Complete', sub: 'Milestone' },
+  'survived_chaos': { name: 'Twist Survivor', sub: 'Resilience' },
+};
+function showAchievement(name) {
+  if (shownAchievements.has(name)) return;
+  shownAchievements.add(name);
+  const a = achievementMap[name] || { name, sub: 'Achievement' };
+  const toast = document.createElement('div');
+  toast.className = 'achievement-toast';
+  toast.innerHTML = `
+    <div class="ti">${ICONS.trophy}</div>
+    <div><small>${escapeHtml(a.sub)}</small>${escapeHtml(a.name)}</div>
+  `;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 4500);
+}
+
+// ============================================================
+// PLAYER INPUT HANDLER
+// ============================================================
+async function handlePlayerInput(text) {
+  if (isProcessing || !text.trim() || !sessionId) return;
+  isProcessing = true;
+  playerInput.disabled = true; sendBtn.disabled = true;
+  choicesContainer.style.display = 'none';
+
+  const playerLine = document.createElement('div');
+  playerLine.className = 'player-line';
+  playerLine.innerHTML = `<span>${escapeHtml(text.trim())}</span>`;
+  logEl.appendChild(playerLine);
+  scrollLogBottom();
+
+  const thinking = document.createElement('div');
+  thinking.className = 'thinking';
+  thinking.innerHTML = `<span class="dots"><i></i><i></i><i></i></span> the narrator is weaving the next scene…`;
+  logEl.appendChild(thinking);
+  scrollLogBottom();
+
+  try {
+    const res = await fetch(`${API_BASE}/turn`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, player_input: text.trim() })
+    });
+    thinking.remove();
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Request failed (${res.status})`);
+    }
+    const data = await res.json();
+    renderSidebar(data.state);
+
+    // achievements from flags
+    const flags = data.state.flags || {};
+    for (const [key, val] of Object.entries(flags)) {
+      if (val && achievementMap[key]) showAchievement(key);
+    }
+
+    renderScene(data.scene, data.chaos_triggered || false, false);
+
+    if (data.chaos_triggered) {
+      const note = document.createElement('div');
+      note.className = 'twist-note';
+      note.innerHTML = `${ICONS.bolt} A twist bends the story`;
+      logEl.appendChild(note);
+      scrollLogBottom();
+    }
+  } catch (e) {
+    thinking.remove();
+    const errBox = document.createElement('div');
+    errBox.className = 'error-box';
+    errBox.innerHTML = `${ICONS.error} ${escapeHtml(e.message)}`;
+    logEl.appendChild(errBox);
+    scrollLogBottom();
+  }
+
+  isProcessing = false;
+  playerInput.disabled = false; sendBtn.disabled = false;
+  playerInput.focus();
+}
+
+// ============================================================
+// GAME FLOW
+// ============================================================
+function resetStorySurface(showSetup = true) {
+  sessionId = null;
+  isProcessing = false;
+  lastChoices = [];
+  logEl.innerHTML = '';
+  choicesGrid.innerHTML = '';
+  choicesContainer.style.display = 'none';
+  gameoverBanner.innerHTML = '';
+  playerInput.value = '';
+  playerInput.disabled = false;
+  sendBtn.disabled = false;
+  shownAchievements.clear();
+  sceneBgLayer.style.backgroundImage = '';
+  sceneBgLayer.classList.remove('visible');
+  sceneBgNext.style.backgroundImage = '';
+  sceneBgNext.style.opacity = '0';
+  document.body.classList.add('pre-scene');
+  characterDisplay.textContent = '—';
+  characterSub.textContent = 'Not yet begun';
+  statsBlock.innerHTML = '<div class="empty-note">—</div>';
+  invList.innerHTML = '<li class="empty-note">empty</li>';
+  flagList.innerHTML = '<li class="empty-note">none yet</li>';
+  twistModeDisplay.textContent = chaosMode ? 'High instability' : 'Stable';
+  twistChance.textContent = chaosMode ? '45%' : '12%';
+  turnCount.textContent = '0';
+
+  if (showSetup) {
+    storyEl.classList.remove('visible');
+    setupEl.style.display = 'flex';
+    openingEl.focus();
+  }
+}
+
+async function startGame() {
+  startError.innerHTML = '';
+  startBtn.disabled = true;
+  newGameBtn.disabled = true;
+  startBtn.innerHTML = `${ICONS.bulb} Weaving the opening scene…`;
+
+  try {
+    resetStorySurface(false);
+    const charClass = document.getElementById('charClass').value;
+    const difficulty = document.getElementById('difficulty').value;
+    const opening = openingEl.value;
+
+    const res = await fetch(`${API_BASE}/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        opening_prompt: opening, chaos_mode: chaosMode,
+        character_class: charClass, difficulty
+      })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Request failed (${res.status})`);
+    }
+    const data = await res.json();
+    sessionId = data.session_id;
+    setupEl.style.display = 'none';
+    storyEl.classList.add('visible');
+    renderSidebar(data.state);
+    renderScene(data.scene, false, true);
+    playerInput.focus();
+  } catch (e) {
+    resetStorySurface(true);
+    startError.innerHTML = `<div class="error-box">${ICONS.error} ${escapeHtml(e.message)}</div>`;
+  } finally {
+    startBtn.disabled = false;
+    newGameBtn.disabled = false;
+    startBtn.innerHTML = `${ICONS.play} Begin the story`;
+  }
+}
+
+startBtn.addEventListener('click', startGame);
+newGameBtn.addEventListener('click', startGame);
+homeBtn.addEventListener('click', () => resetStorySurface(true));
+
+// ============================================================
+// EVENTS
+// ============================================================
+chaosSwitch.addEventListener('click', () => {
+  chaosMode = !chaosMode;
+  chaosSwitch.classList.toggle('on', chaosMode);
+});
+
+clearLogBtn.addEventListener('click', () => {
+  if (logEl.children.length === 0) return;
+  const scenes = logEl.querySelectorAll('.scene');
+  if (scenes.length > 0) {
+    const last = scenes[scenes.length - 1];
+    logEl.innerHTML = '';
+    logEl.appendChild(last);
+    choicesGrid.innerHTML = '';
+    choicesContainer.style.display = 'none';
+    gameoverBanner.innerHTML = '';
+    playerInput.disabled = false; sendBtn.disabled = false;
+  }
+});
+
+function submitInput() {
+  if (playerInput.value.trim()) {
+    const text = playerInput.value;
+    playerInput.value = '';
+    handlePlayerInput(text);
+  }
+}
+playerInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitInput(); });
+sendBtn.addEventListener('click', submitInput);
+
+// ============================================================
+// INIT
+// ============================================================
+loadPresets();
+console.log('%cLumen · AI Storyteller loaded', 'color:#e8b4d0; font-weight:bold;');
+</script>
+</body>
+</html>

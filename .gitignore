@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Runtime data (regenerated automatically)
+data/game_states.db
+data/image_cache/*
+!data/image_cache/.gitkeep
+
+# Environment (contains the Gemini API key — keep out of version control)
+prompts/.env
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,5 @@
+TWIST EVENT: Something unexpected and vivid happens this turn — a surprising turn that bends the story in an unforeseen direction while staying true to its tone and world. It should feel cinematic and story-advancing rather than random or silly: a long-absent character reappears, a hidden door reveals itself, the weather turns dramatically, a betrayal surfaces, a clue recontextualizes everything seen so far, a stranger arrives with urgent news, an object behaves in an impossible way, the protagonist is recognized by someone they have never met. Weave it into the narration naturally, then let the player react to it next turn.
+TWIST EVENT: Introduce a sudden, disruptive, and structurally completely different event right now. 
+- Do not advance your current passive plan or routine environmental templates.
+- Force an active complication: an unexpected complication, a sharp subtext shift, an immediate physical hazard, or a bizarre visual anomaly that makes sense in this genre.
+- Break standard template loops. Ensure the player's upcoming choice vector forces an immediate decision regarding this new complication.
