@@ -53,7 +53,7 @@ pip install -r requirements.txt
 Your Gemini key is already set in `prompts/.env`:
 
 ```
-GEMINI_API_KEY=AQ.Ab8RN6Iks4wvaC-Ph7LIdLpifY-pOoz77sJyjbEy_8fteAZJNg
+GEMINI_API_KEY=''
 ```
 
 Get a free key or rotate it at https://aistudio.google.com/app/apikey.
