@@ -33,8 +33,9 @@ with open(
 # -----------------------------
 SUMMARIZE_EVERY_N_TURNS = 6
 CHAOS_MODE_SUMMARIZE_EVERY_N_TURNS = 10
-# How many raw history entries to pass to the LLM each turn.
-# Older turns are replaced by the rolling summary, keeping token cost flat.
+# How many raw history entries to pass to the LLM each turn. A player action and
+# its narration are two entries, so six entries is exactly three recent turns.
+# Older turns are represented by the rolling summary, keeping token cost flat.
 RECENT_TURNS_LIMIT = 6
 # How many raw history entries to KEEP after a summary is written.
 # Higher than 2 so the model still sees the last few beats of the scene.
@@ -48,6 +49,11 @@ FORBIDDEN_TEMPLATE_FRAGMENTS = (
     "the discovery changes what the next step can be",
     "it points toward",
     "a secondary terminal boots itself and begins displaying coordinates",
+    # Catches the model echoing the internal [TWIST EVENT] directive
+    # verbatim into player-facing narration instead of dramatizing its
+    # effect in original prose.
+    "twist event",
+    "internal gm directive",
 )
 
 # -----------------------------
@@ -161,6 +167,8 @@ DEFAULT_STATE = {
 # -----------------------------
 def _ensure_state_shape(state: dict) -> None:
     """Ensure old save files remain compatible when new fields are added."""
+    if not isinstance(state, dict):
+        raise TypeError("game state must be a mapping")
     for key, value in DEFAULT_STATE.items():
         if key not in state:
             state[key] = deepcopy(value)
@@ -173,6 +181,11 @@ def _ensure_state_shape(state: dict) -> None:
             state["stats"]["resolve"] = state["stats"].pop("sanity")
         for key, value in DEFAULT_STATE["stats"].items():
             state["stats"].setdefault(key, value)
+        for key, default in DEFAULT_STATE["stats"].items():
+            value = state["stats"].get(key, default)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                value = default
+            state["stats"][key] = max(MIN_STAT_VALUE, min(MAX_STAT_VALUE, value))
 
     if not isinstance(state.get("narrative_context"), dict):
         state["narrative_context"] = deepcopy(DEFAULT_STATE["narrative_context"])
@@ -183,12 +196,62 @@ def _ensure_state_shape(state: dict) -> None:
     # Ensure ring-buffer for fallback consequence deduplication
     if not isinstance(state.get("last_consequences"), list):
         state["last_consequences"] = []
+    else:
+        state["last_consequences"] = [
+            str(item).strip()
+            for item in state["last_consequences"]
+            if str(item).strip()
+        ][-6:]
+
+    for key in ("inventory", "flags", "relationships", "quests", "discovered_locations"):
+        expected = dict if key in {"flags", "relationships"} else list
+        if not isinstance(state.get(key), expected):
+            state[key] = deepcopy(DEFAULT_STATE[key])
+    for key in ("action_history", "narration_history", "last_choices"):
+        if not isinstance(state.get(key), list):
+            state[key] = deepcopy(DEFAULT_STATE[key])
+    if not isinstance(state.get("turn_count"), int) or isinstance(state.get("turn_count"), bool):
+        state["turn_count"] = 0
+    state["turn_count"] = max(0, state["turn_count"])
 
 
 def _format_bullets(values: list) -> str:
     if not values:
         return "  - None"
     return "\n".join(f"  - {value}" for value in values)
+
+
+def _join_text_blocks(*blocks: object) -> str:
+    """Join independent prose/state blocks without letting paragraphs bleed together."""
+    return "\n\n".join(
+        str(block).strip()
+        for block in blocks
+        if block is not None and str(block).strip()
+    )
+
+
+def _clip_recent_turns(turns: list, limit: int = RECENT_TURNS_LIMIT) -> list:
+    """Return only the bounded raw history window used for the next LLM call."""
+    if not isinstance(turns, list):
+        return []
+    return turns[-max(0, limit):]
+
+
+def _format_choice_block(choices: list[str]) -> str:
+    """Render the API-facing choice block as predictable Markdown."""
+    option_lines = "\n".join(f"* {str(choice).strip()}" for choice in choices if str(choice).strip())
+    return _join_text_blocks("What do you want to do?", option_lines)
+
+
+def _normalize_narration_paragraphs(value: object) -> str:
+    """Preserve prose blocks while guaranteeing a blank line between them."""
+    text = re.sub(r"\r\n?", "\n", str(value or "")).strip()
+    paragraphs = [
+        re.sub(r"\s+", " ", paragraph).strip()
+        for paragraph in re.split(r"\n{2,}", text)
+        if paragraph.strip()
+    ]
+    return "\n\n".join(paragraphs)
 
 
 def _assemble_prompt(
@@ -200,16 +263,17 @@ def _assemble_prompt(
     """Build the complete prompt sent to the LLM."""
     _ensure_state_shape(state)
 
-    history_text = "\n".join(
+    recent_turns = _clip_recent_turns(recent_turns)
+    history_text = _join_text_blocks(*(
         f"{turn.get('role', 'unknown')}: {turn.get('text', '')}"
         for turn in recent_turns
-    )
+    ))
     if not history_text:
         history_text = "No previous turns."
 
     relationships = state.get("relationships", {})
     relationships_text = (
-        "\n".join(f"  - {name}: {value}" for name, value in relationships.items())
+        _join_text_blocks(*(f"  - {name}: {value}" for name, value in relationships.items()))
         if relationships
         else "  - None"
     )
@@ -221,7 +285,13 @@ def _assemble_prompt(
     open_threads = narrative_context.get("open_threads", [])
 
     chaos_text = (
-        f"\n[TWIST EVENT]\n{chaos_fragment}\n"
+        "\n[TWIST EVENT — INTERNAL GM DIRECTIVE, NOT PLAYER-FACING TEXT]\n"
+        f"{chaos_fragment}\n"
+        "Do not copy, quote, or paraphrase the directive above. Do not include the "
+        "words \"twist event\" or any part of this instruction in the narration. "
+        "Instead, express its effect entirely through original in-world prose — "
+        "action, dialogue, and sensory detail — exactly as you would for any other "
+        "turn.\n"
         if chaos_fragment
         else ""
     )
@@ -254,7 +324,7 @@ def _assemble_prompt(
             label = flag_key.replace("_", " ")
             discovered_flags_lines.append(label)
     discovered_flags_text = (
-        "\n".join(f"  - {line}" for line in discovered_flags_lines)
+        _join_text_blocks(*(f"  - {line}" for line in discovered_flags_lines))
         if discovered_flags_lines
         else "  - None"
     )
@@ -351,16 +421,54 @@ def _apply_mapping_updates(target: dict, updates: dict | None) -> None:
         target.update(updates)
 
 
+def _split_choice_text(value: str) -> list[str]:
+    """Turn a display-style choice string into individual suggestions."""
+    text = re.sub(r"\r\n?", "\n", value).strip()
+    if not text:
+        return []
+
+    # Accept formats commonly returned by models or older clients:
+    # newline/bullet/numbered lists, pipe/semicolon/middle-dot joins, and
+    # simple comma-separated suggestions.
+    text = re.sub(r"(?m)^\s*(?:[-*•▪◦]|\d+[.)])\s*", "", text)
+    text = re.sub(r"\s+\d+[.)]\s+", "\n", text)
+    text = re.sub(r"\s*(?:\||;|·|•)\s*", "\n", text)
+    parts = [part.strip() for part in re.split(r"\n+", text) if part.strip()]
+
+    if len(parts) == 1:
+        comma_parts = [part.strip() for part in re.split(r",\s+(?=[A-Z0-9])", text)]
+        if 1 < len(comma_parts) <= 3:
+            parts = [part for part in comma_parts if part]
+    return parts
+
+
+def _normalize_choices(raw_choices: object) -> list[str]:
+    """Normalize choice arrays, delimited strings, and choice objects."""
+    if isinstance(raw_choices, str):
+        return _split_choice_text(raw_choices)
+    if isinstance(raw_choices, dict):
+        for key in ("text", "label", "choice", "description", "value"):
+            if key in raw_choices:
+                return _normalize_choices(raw_choices[key])
+        return []
+    if not isinstance(raw_choices, (list, tuple)):
+        return []
+
+    normalized = []
+    for item in raw_choices:
+        normalized.extend(_normalize_choices(item))
+    return normalized
+
+
 def _apply_turn_result(state: dict, result: dict) -> dict:
     """Apply an LLM turn result to state and build the scene response."""
     _ensure_state_shape(state)
 
-    narration = str(result.get("narration", "")).strip()
+    narration = _normalize_narration_paragraphs(result.get("narration", ""))
     if not narration:
         narration = (
-            "The scene changes after your last move. A new detail in the image is "
-            "waiting to be understood, and the next choice will decide which part "
-            "of it matters."
+            "A faint movement catches your eye nearby, while the surrounding silence "
+            "waits for your response."
         )
 
     state_updates = result.get("state_updates")
@@ -371,6 +479,11 @@ def _apply_turn_result(state: dict, result: dict) -> dict:
                     _apply_mapping_updates(state[key], value)
             elif key in state:
                 state[key] = deepcopy(value)
+
+    # Model output is untrusted JSON.  Re-normalize immediately so malformed
+    # state_updates cannot turn the next turn into an exception or an endless
+    # fallback loop (for example, by replacing inventory with a string).
+    _ensure_state_shape(state)
 
     stats_delta = result.get("stats_delta", {})
     if isinstance(stats_delta, dict):
@@ -438,9 +551,7 @@ def _apply_turn_result(state: dict, result: dict) -> dict:
     state["ambient_background"] = scene_image
 
     # Get choices from result, ensure they're properly formatted
-    choices = result.get("choices_hint", result.get("choices", []))
-    if not isinstance(choices, list):
-        choices = []
+    choices = _normalize_choices(result.get("choices_hint", result.get("choices", [])))
     
     # Clean and deduplicate choices
     clean_choices = []
@@ -496,6 +607,7 @@ def _apply_turn_result(state: dict, result: dict) -> dict:
     return {
         "narration": narration,
         "choices_hint": clean_choices[:3],
+        "choices_markdown": _format_choice_block(clean_choices[:3]),
         "image_prompt": image_prompt,
         "image_path": scene_image,
         "ambient_path": scene_image,
@@ -600,14 +712,62 @@ def _remove_forbidden_template_sentences(result: dict) -> dict:
             for fragment in FORBIDDEN_TEMPLATE_FRAGMENTS
         )
     ]
-    cleaned["narration"] = " ".join(kept).strip() or narration
+    # If the whole draft is stock text, returning the original draft defeats
+    # the purpose of this last-resort sanitizer and lets the loop leak through
+    # to the player.  Keep a short neutral bridge that is safe to repair on the
+    # next turn instead.
+    cleaned["narration"] = (
+        " ".join(kept).strip()
+        or "The scene shifts around you, leaving one immediate detail impossible to ignore."
+    )
     return cleaned
+
+
+def _sanitize_player_input_echo(narration: str, player_input: str) -> str:
+    """Keep the command backend-only if a provider echoes it into narration."""
+    text = str(narration or "").strip()
+    raw = str(player_input or "").strip()
+    if not text or not raw:
+        return text
+
+    raw_normalized = _normalized_text(raw)
+    if len(raw_normalized.split()) < 2:
+        return text
+
+    # Remove a sentence that contains the complete command, including common
+    # model-added leading pronouns such as "You". Do not expose a mangled
+    # command by deleting only the matching substring in the middle of prose.
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    kept = []
+    for sentence in sentences:
+        if re.search(
+            rf"(?<![a-z0-9]){re.escape(raw_normalized)}(?![a-z0-9])",
+            _normalized_text(sentence),
+        ):
+            continue
+        kept.append(sentence)
+    return " ".join(kept).strip() or (
+        "The scene shifts around you, leaving one immediate detail impossible to ignore."
+    )
+
+def _narration_leaks_injected_instructions(result: dict) -> bool:
+    """Detect when the narration substantially reproduces the raw
+    [TWIST EVENT] directive text that was injected into the prompt, even if
+    it doesn't contain the literal marker phrases in FORBIDDEN_TEMPLATE_FRAGMENTS
+    (e.g. only the back half of a leaked block survived a sentence strip)."""
+    narration = str(result.get("narration", "")).strip()
+    if not narration:
+        return False
+    for fragment in chaos.CHAOS_FRAGMENTS:
+        if _contains_repeated_ngram(narration, fragment, 6):
+            return True
+    return False
+
 
 def _generate_non_repeating_turn(full_prompt: str, state: dict) -> dict:
     """Generate a turn and repair it when it repeats a recent structural pattern."""
-    last_consequences = state.get("last_consequences", [])
     result = llm_client.generate_turn(
-        full_prompt, temperature=0.85, last_consequences=last_consequences
+        full_prompt, temperature=0.85, last_consequences=state.get("last_consequences", [])
     )
     # Track fallback consequence to prevent repetition on next turn.
     _fb_consequence = result.pop("_fallback_consequence", "")
@@ -615,7 +775,7 @@ def _generate_non_repeating_turn(full_prompt: str, state: dict) -> dict:
         state.setdefault("last_consequences", []).append(_fb_consequence)
         state["last_consequences"] = state["last_consequences"][-6:]
 
-    if not _result_repeats_recent_story(result, state):
+    if not _result_repeats_recent_story(result, state) and not _narration_leaks_injected_instructions(result):
         return result
 
     repair_prompt = full_prompt
@@ -632,19 +792,45 @@ def _generate_non_repeating_turn(full_prompt: str, state: dict) -> dict:
             "new evidence becomes physically available, the environment changes, "
             "or an immediate obstacle appears. Return a complete valid JSON object."
         )
+        # Re-read last_consequences fresh on every attempt (rather than the
+        # value captured before this turn started) — otherwise a retry has no
+        # way of knowing which consequence the *previous* retry in this same
+        # turn just picked, and can re-select the exact phrase that just got
+        # rejected for repeating.
         result = llm_client.generate_turn(
             repair_prompt,
             temperature=min(1.25, 1.0 + attempt * 0.1),
-            last_consequences=last_consequences,
+            last_consequences=state.get("last_consequences", []),
         )
-        result.pop("_fallback_consequence", "")
-        if not _result_repeats_recent_story(result, state):
+        _fb_consequence = result.pop("_fallback_consequence", "")
+        if _fb_consequence:
+            state.setdefault("last_consequences", []).append(_fb_consequence)
+            state["last_consequences"] = state["last_consequences"][-6:]
+        if not _result_repeats_recent_story(result, state) and not _narration_leaks_injected_instructions(result):
             return result
 
-    # Never concatenate a stock ending. If every provider attempt repeats the
-    # known bridge, remove only that complete template sentence and retain the
-    # model's organic narration and state updates.
-    return _remove_forbidden_template_sentences(result)
+    # Every repair attempt still failed. If the draft is merely reusing a
+    # stock bridge sentence, strip just that sentence and keep the rest of
+    # the model's organic prose. But if the draft is actually leaking the
+    # raw injected [TWIST EVENT] directive, a sentence-level strip isn't
+    # safe — only the first offending sentence contains the literal marker
+    # phrase, and the remaining leaked instruction text would still reach
+    # the player. In that case, discard the leaking draft entirely and use
+    # the fully deterministic, chaos-free fallback narrator instead.
+    if _narration_leaks_injected_instructions(result):
+        result = llm_client._fallback_turn(full_prompt, state.get("last_consequences", []))
+    cleaned = _remove_forbidden_template_sentences(result)
+    if _result_repeats_recent_story(cleaned, state):
+        # A provider can keep returning the same draft even after repair
+        # prompts, and a deterministic fallback can collide with a recent
+        # variant too.  Do not hand the repeated scene to the player as the
+        # final fallback; preserve its choices/state while giving the story a
+        # fresh, neutral beat to build from next turn.
+        cleaned["narration"] = (
+            "A new movement breaks the pattern: the scene shifts around you, "
+            "and a fresh decision is now unavoidable."
+        )
+    return cleaned
 
 
 def _remember_turn(state: dict, player_input: str, narration: str, choices: list) -> None:
@@ -671,6 +857,8 @@ def new_game(
     difficulty: str = "Balanced",
 ) -> dict:
     """Create, generate, persist, and return a new game session."""
+    if not isinstance(opening_prompt, str) or not opening_prompt.strip():
+        raise ValueError("opening_prompt must contain non-whitespace text")
     db.init_db()
     session_id = str(uuid.uuid4())
     state = deepcopy(DEFAULT_STATE)
@@ -710,6 +898,8 @@ def new_game(
 
 def take_turn(session_id: str, player_input: str) -> dict:
     """Process one player action and persist the resulting game state."""
+    if not isinstance(player_input, str) or not player_input.strip():
+        raise ValueError("player_input must contain non-whitespace text")
     saved = db.load_game(session_id)
     if saved is None:
         raise ValueError(f"No game found for session_id={session_id}")
@@ -743,12 +933,13 @@ def take_turn(session_id: str, player_input: str) -> dict:
 
     full_prompt = _assemble_prompt(
         state=state,
-        recent_turns=history[-RECENT_TURNS_LIMIT:],
+        recent_turns=_clip_recent_turns(history),
         player_input=player_input,
         chaos_fragment=chaos_fragment,
     )
 
     result = _generate_non_repeating_turn(full_prompt, state)
+    result["narration"] = _sanitize_player_input_echo(result.get("narration", ""), player_input)
     scene = _apply_turn_result(state, result)
     _remember_turn(state, player_input, scene["narration"], scene["choices_hint"])
 
@@ -763,10 +954,10 @@ def take_turn(session_id: str, player_input: str) -> dict:
     )
 
     if state["turn_count"] % summarize_every == 0:
-        history_text = "\n".join(
+        history_text = _join_text_blocks(*(
             f"{entry.get('role', 'unknown')}: {entry.get('text', '')}"
             for entry in history
-        )
+        ))
         state["story_summary"] = llm_client.summarize(history_text)
         # Keep the last few turns so the model still sees recent context,
         # while the summary covers everything older. Trimming to only 2

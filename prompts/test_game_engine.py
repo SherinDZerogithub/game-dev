@@ -1,11 +1,156 @@
 import unittest
 from unittest.mock import patch
 
+from prompts import chaos
 from prompts import game_engine
+from prompts import image_gen
 from prompts import llm_client
 
 
+class BackendSafetyRegressionTests(unittest.TestCase):
+    def test_recent_prompt_history_is_bounded_and_blocks_are_separated(self):
+        state = game_engine.deepcopy(game_engine.DEFAULT_STATE)
+        history = [
+            {"role": "narrator", "text": f"old narration {index}"}
+            for index in range(10)
+        ]
+        prompt = game_engine._assemble_prompt(state, history, "inspect the trees", None)
+
+        self.assertNotIn("old narration 0", prompt)
+        self.assertIn("old narration 4", prompt)
+        self.assertIn("old narration 9", prompt)
+        self.assertIn("narrator: old narration 4\n\nnarrator: old narration 5", prompt)
+
+    def test_choice_markdown_has_fresh_header_and_strict_bullets(self):
+        block = game_engine._format_choice_block(["Search the trees", "Follow the impressions"])
+
+        self.assertEqual(
+            block,
+            "What do you want to do?\n\n* Search the trees\n* Follow the impressions",
+        )
+
+    def test_player_command_is_not_echoed_in_narration(self):
+        narration = (
+            "You search the trees for a trail. A silver thread catches the moonlight."
+        )
+
+        cleaned = game_engine._sanitize_player_input_echo(
+            narration, "search the trees for a trail"
+        )
+
+        self.assertEqual(cleaned, "A silver thread catches the moonlight.")
+
+    def test_huggingface_402_returns_local_fallback(self):
+        with patch.object(image_gen, "_huggingface_api_keys", return_value=["hf-key"]), \
+             patch.object(
+                 image_gen,
+                 "_generate_huggingface_to_path",
+                 side_effect=image_gen._HuggingFacePaymentRequired("HTTP 402"),
+             ), \
+             patch.object(image_gen, "_get_fallback_image", return_value="fallback.png"):
+            result = image_gen._generate_to_path("scene", "target.png", "16:9")
+
+        self.assertEqual(result, "fallback.png")
+
+
+class ChaosLeakRegressionTests(unittest.TestCase):
+    """Regression coverage for the bug where the raw [TWIST EVENT] directive
+    text got echoed back verbatim as player-facing narration instead of
+    being dramatized in original prose."""
+
+    def test_chaos_fragments_are_split_not_concatenated(self):
+        # chaos_prompt.txt contains two distinct "TWIST EVENT:" directives.
+        # They must be kept as separate, independently-selectable blocks
+        # rather than one long concatenated blob (the long blob was far
+        # more likely to get echoed verbatim by the model).
+        self.assertGreaterEqual(len(chaos.CHAOS_FRAGMENTS), 2)
+        for fragment in chaos.CHAOS_FRAGMENTS:
+            self.assertEqual(fragment.count("TWIST EVENT:"), 1)
+
+    def test_leak_detector_catches_echoed_directive(self):
+        leaking_result = {
+            "narration": (
+                "TWIST EVENT: Something unexpected and vivid happens this turn "
+                "\u2014 a surprising turn that bends the story in an unforeseen "
+                "direction while staying true to its tone and world."
+            )
+        }
+        self.assertTrue(
+            game_engine._narration_leaks_injected_instructions(leaking_result)
+        )
+
+    def test_leak_detector_ignores_normal_narration(self):
+        normal_result = {
+            "narration": "You step into the relay bay. The beacon flickers once and dies."
+        }
+        self.assertFalse(
+            game_engine._narration_leaks_injected_instructions(normal_result)
+        )
+
+    @patch("prompts.game_engine.image_gen.generate_scene_image", return_value=None)
+    @patch("prompts.game_engine.llm_client.generate_turn")
+    def test_turn_falls_back_when_every_draft_leaks_the_directive(
+        self, mock_generate_turn, _image
+    ):
+        # Every attempt (initial + both repairs) leaks the raw directive.
+        leaking = {
+            "narration": (
+                "TWIST EVENT: Introduce a sudden, disruptive, and structurally "
+                "completely different event right now."
+            ),
+            "choices_hint": ["a", "b", "c"],
+        }
+        mock_generate_turn.return_value = dict(leaking)
+
+        state = game_engine.deepcopy(game_engine.DEFAULT_STATE)
+        result = game_engine._generate_non_repeating_turn("dummy prompt", state)
+
+        self.assertNotIn("twist event", result["narration"].lower())
+        self.assertTrue(result["narration"].strip())
+
+
 class NarrativeContextTests(unittest.TestCase):
+    def test_fallback_parser_keeps_fsm_out_of_story_summary(self):
+        state = game_engine.deepcopy(game_engine.DEFAULT_STATE)
+        state["world_prompt"] = game_engine.LORE_PRESETS[4]["opening"]
+        prompt = game_engine._assemble_prompt(state, [], "study the map", None)
+
+        context = llm_client._extract_context_from_prompt(prompt)
+
+        self.assertEqual(context["story_summary"], "No summary yet.")
+        self.assertEqual(context["location"], "Unknown")
+        self.assertEqual(llm_client._story_profile(context)["kind"], "fantasy")
+
+    def test_fallback_preserves_location_for_non_movement_actions(self):
+        state = game_engine.deepcopy(game_engine.DEFAULT_STATE)
+        state["world_prompt"] = game_engine.LORE_PRESETS[4]["opening"]
+        state["narrative_context"]["location"] = "a forest tent"
+        prompt = game_engine._assemble_prompt(state, [], "sleep in the tent", None)
+
+        result = llm_client._fallback_turn(prompt)
+
+        self.assertEqual(
+            result["narrative_context_updates"]["location"], "a forest tent"
+        )
+
+    def test_fallback_honors_named_movement_destination(self):
+        state = game_engine.deepcopy(game_engine.DEFAULT_STATE)
+        state["world_prompt"] = game_engine.LORE_PRESETS[0]["opening"]
+        state["narrative_context"]["location"] = "the rain-slick street"
+        prompt = game_engine._assemble_prompt(state, [], "walk to the alley", None)
+
+        result = llm_client._fallback_turn(prompt)
+
+        self.assertEqual(result["narrative_context_updates"]["location"], "the alley")
+
+    def test_forbidden_only_draft_is_replaced(self):
+        result = game_engine._remove_forbidden_template_sentences(
+            {"narration": "The discovery changes what the next step can be."}
+        )
+
+        self.assertNotIn("the discovery changes", result["narration"].lower())
+        self.assertTrue(result["narration"].strip())
+
     def test_prompt_contains_story_memory_and_bridge_instruction(self):
         state = {
             **game_engine.deepcopy(game_engine.DEFAULT_STATE),
@@ -55,8 +200,22 @@ class NarrativeContextTests(unittest.TestCase):
 
         scene = game_engine._apply_turn_result(state, {"narration": "   "})
 
-        self.assertIn("scene changes", scene["narration"])
+        self.assertNotIn("scene changes", scene["narration"].lower())
         self.assertTrue(scene["narration"].strip())
+
+    def test_choice_normalizer_splits_delimited_strings_and_objects(self):
+        self.assertEqual(
+            game_engine._normalize_choices(
+                "Follow the stream | Touch the glowing symbol | Observe the bird"
+            ),
+            ["Follow the stream", "Touch the glowing symbol", "Observe the bird"],
+        )
+        self.assertEqual(
+            game_engine._normalize_choices(
+                [{"label": "Follow the stream"}, {"text": "Touch the symbol"}]
+            ),
+            ["Follow the stream", "Touch the symbol"],
+        )
 
     @patch("prompts.game_engine.image_gen.generate_scene_image", return_value=None)
     def test_choice_fallback_deduplicates_before_limiting(self, _image):

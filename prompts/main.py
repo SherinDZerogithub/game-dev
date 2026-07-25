@@ -103,9 +103,12 @@ def presets():
 @app.post("/start")
 def start_game(req: StartRequest):
     """Start a new game."""
+    opening_prompt = req.opening_prompt.strip()
+    if not opening_prompt:
+        raise HTTPException(status_code=422, detail="opening_prompt must contain text")
     try:
         return game_engine.new_game(
-            opening_prompt=req.opening_prompt.strip(),
+            opening_prompt=opening_prompt,
             chaos_mode=req.chaos_mode,
             custom_state=req.custom_state,
             character_class=req.character_class,
@@ -118,10 +121,13 @@ def start_game(req: StartRequest):
 @app.post("/turn")
 def take_turn(req: TurnRequest):
     """Submit one player action."""
+    player_input = req.player_input.strip()
+    if not player_input:
+        raise HTTPException(status_code=422, detail="player_input must contain text")
     try:
         return game_engine.take_turn(
             session_id=req.session_id.strip(),
-            player_input=req.player_input.strip(),
+            player_input=player_input,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -502,19 +502,6 @@
     background: rgba(255,255,255,0.16);
     border-radius: 4px;
   }
-  .scene .body.meta-wrap { padding: 12px 20px 15px; }
-  .scene.has-image .body.meta-wrap {
-    margin: 0;
-    padding: 10px 20px 15px;
-    overflow: visible;
-  }
-  .scene .scene-tag-inline {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase;
-    color: var(--muted); font-weight: 600;
-    margin-bottom: 10px;
-  }
-  .scene .scene-tag-inline svg { width: 13px; height: 13px; color: var(--accent); }
   .scene .narration {
     font-family: var(--serif);
     font-weight: 400;
@@ -527,32 +514,6 @@
   .scene .narration::first-letter {
     font-size: 1.5em; font-weight: 600; color: var(--accent);
   }
-  .scene .meta {
-    display: flex; align-items: center; justify-content: space-between;
-    margin-top: 10px;
-  }
-  .scene .timestamp { font-size: 10.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
-  .scene .timestamp svg { width: 12px; height: 12px; }
-
-  .scene .hints {
-    font-family: var(--mono); font-weight: 600; font-size: 11.5px;
-    color: var(--accent-2);
-    padding: 7px 13px;
-    background: rgba(201,168,232,0.10);
-    border: 1px solid rgba(201,168,232,0.18);
-    border-radius: 9px;
-    display: inline-flex; align-items: center; gap: 7px;
-  }
-  .scene .hints svg { width: 13px; height: 13px; }
-
-  .scene.twist {
-    border-color: var(--gold);
-    box-shadow: 0 0 0 1px rgba(232,201,139,0.35) inset, 0 10px 34px rgba(232,201,139,0.14);
-  }
-  .scene.twist .scene-img::after {
-    background: linear-gradient(180deg, rgba(40,30,10,0.10), rgba(30,24,10,0.55) 60%, rgba(20,22,32,0.92));
-  }
-
   /* game over */
   .gameover-banner {
     color: var(--danger);
@@ -595,43 +556,35 @@
   .cursor { display: inline-block; width: 8px; height: 16px; background: var(--accent); animation: blink 1s step-end infinite; }
   @keyframes blink { 50% { opacity: 0; } }
 
-  /* choice cards */
+  /* interactive markdown-style choice list */
   .choices-wrap { margin: 6px 0 4px; }
   .choices-label {
-    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.18em;
-    color: var(--muted); font-weight: 700; margin-bottom: 9px;
-    display: flex; align-items: center; gap: 7px;
+    font-family: var(--serif); font-size: 16px; color: var(--ink);
+    font-weight: 400; margin-bottom: 8px;
   }
-  .choices-label svg { width: 13px; height: 13px; color: var(--accent); }
-  .choices-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 9px; }
+  .choices-grid { margin: 0; padding-left: 24px; }
+  .choices-grid li { padding-left: 3px; margin: 7px 0; color: var(--accent); }
   .choice-card {
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 12px 14px;
+    background: transparent;
+    border: 0;
+    padding: 0;
     cursor: pointer;
-    font-size: 12.5px; font-weight: 500;
+    font-size: 14px; font-weight: 500;
     color: var(--ink-soft);
     transition: all 0.2s ease;
     text-align: left;
-    font-family: var(--mono);
-    display: flex; align-items: center; gap: 10px;
+    font-family: var(--serif);
+    display: inline;
     line-height: 1.4;
   }
   .choice-card:hover {
-    background: rgba(232,180,208,0.10);
-    border-color: var(--accent);
-    transform: translateY(-2px);
-    box-shadow: 0 8px 22px rgba(0,0,0,0.30);
+    background: transparent;
+    border-color: transparent;
+    text-decoration: underline;
+    transform: none;
+    box-shadow: none;
     color: var(--ink);
   }
-  .choice-card .ci {
-    width: 26px; height: 26px; flex-shrink: 0;
-    border-radius: 8px; display: grid; place-items: center;
-    background: linear-gradient(135deg, rgba(232,180,208,0.16), rgba(201,168,232,0.16));
-    color: var(--accent);
-  }
-  .choice-card .ci svg { width: 14px; height: 14px; }
 
   /* thinking */
   .thinking {
@@ -683,14 +636,6 @@
   .achievement-toast small { display: block; font-family: var(--mono); font-weight: 600; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--gold); }
   @keyframes toastIn { from { transform: translateX(120%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
   @keyframes toastOut { to { transform: translateX(40px); opacity: 0; } }
-
-  /* twist note */
-  .twist-note {
-    font-size: 11.5px; color: var(--gold); text-align: center; padding: 6px 0;
-    display: flex; align-items: center; justify-content: center; gap: 8px;
-    letter-spacing: 0.04em;
-  }
-  .twist-note svg { width: 14px; height: 14px; }
 
   /* ============================================================
      SIDEBAR
@@ -887,16 +832,9 @@
         <div id="gameoverBanner"></div>
 
         <div class="choices-wrap" id="choicesContainer" style="display:none;">
-          <div class="choices-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>
-            What do you do next?
-          </div>
-          <div class="choices-grid" id="choicesGrid"></div>
+          <div class="choices-label">What do you want to do?</div>
+          <ul class="choices-grid" id="choicesGrid"></ul>
         </div>
-        <div class="hint-line" style="text-align:center; justify-content:center; margin:2px 0 8px;">
-          Suggestions are optional — feel free to type anything.
-        </div>
-
         <div class="input-row" id="inputRow">
           <span class="prompt-glyph">&gt;</span>
           <input id="playerInput" type="text" maxlength="3000" placeholder="Describe what you do next…" autocomplete="off" />
@@ -974,6 +912,7 @@ let chaosMode = false;
 let isProcessing = false;
 let lastChoices = [];
 let selectedPresetId = null;
+let backgroundVersion = 0;
 
 // ============================================================
 // SVG ICON LIBRARY (inline — no emojis)
@@ -1037,20 +976,50 @@ function escapeHtml(str) {
   d.textContent = str;
   return d.innerHTML;
 }
-function getTimestamp() {
-  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
 function scrollLogBottom() { logEl.scrollTop = logEl.scrollHeight; }
 
-// choice icon by keyword
-function iconForChoice(hint) {
-  const l = (hint || '').toLowerCase();
-  if (/(go|walk|head|follow|leave|move|run|enter|climb|travel|cross|approach)/.test(l)) return ICONS.go;
-  if (/(talk|ask|say|tell|speak|answer|call|greet|question)/.test(l)) return ICONS.talk;
-  if (/(look|search|examine|inspect|study|observe|watch|read)/.test(l)) return ICONS.look;
-  if (/(fight|attack|strike|defend|block|punch|shoot|weapon)/.test(l)) return ICONS.fight;
-  if (/(take|grab|pick|use|open|drink|eat|grab|carry)/.test(l)) return ICONS.take;
-  return ICONS.think;
+function splitChoiceText(value) {
+  let text = String(value || '').replace(/\r\n?/g, '\n').trim();
+  if (!text) return [];
+
+  // Support model/client formats such as newline, bullets, numbering, and
+  // the legacy pipe/middle-dot join without exposing the delimiters.
+  text = text.replace(/(^|\n)\s*(?:[-*•▪◦]|\d+[.)])\s*/g, '$1');
+  text = text.replace(/\s+\d+[.)]\s+/g, '\n');
+  text = text.replace(/\s*(?:\||;|·|•)\s*/g, '\n');
+  let parts = text.split(/\n+/).map(part => part.trim()).filter(Boolean);
+
+  // Only treat commas as separators when the whole value clearly contains
+  // a short list; commas inside a single choice should remain intact.
+  if (parts.length === 1) {
+    const commaParts = text.split(/,\s+(?=[A-Z0-9])/).map(part => part.trim()).filter(Boolean);
+    if (commaParts.length > 1 && commaParts.length <= 3) parts = commaParts;
+  }
+  return parts;
+}
+
+function normalizeChoices(rawChoices) {
+  if (typeof rawChoices === 'string') return splitChoiceText(rawChoices);
+  if (rawChoices && typeof rawChoices === 'object' && !Array.isArray(rawChoices)) {
+    if (Array.isArray(rawChoices.choices)) return normalizeChoices(rawChoices.choices);
+    for (const key of ['text', 'label', 'choice', 'description', 'value']) {
+      if (rawChoices[key] !== undefined) return normalizeChoices(rawChoices[key]);
+    }
+    return [];
+  }
+  if (!Array.isArray(rawChoices)) return [];
+
+  const choices = [];
+  const seen = new Set();
+  rawChoices.forEach(item => normalizeChoices(item).forEach(choice => {
+    const cleaned = choice.trim();
+    const key = cleaned.toLowerCase();
+    if (cleaned && !seen.has(key)) {
+      choices.push(cleaned);
+      seen.add(key);
+    }
+  }));
+  return choices;
 }
 
 // ============================================================
@@ -1103,15 +1072,22 @@ function truncate(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, 
 // ============================================================
 function setBackground(url) {
   if (!url) return;
+  // A previous scene can finish loading after the player starts a new game or
+  // after a newer scene has already been requested.  Token both the preload
+  // callback and its delayed crossfade so an old image cannot overwrite the
+  // current story background.
+  const version = ++backgroundVersion;
   // preload then crossfade via the secondary layer
   const img = new Image();
   img.onload = () => {
+    if (version !== backgroundVersion) return;
     document.body.classList.remove('pre-scene');
     sceneBgNext.style.backgroundImage = `url(${url})`;
     // fade next in
     requestAnimationFrame(() => { sceneBgNext.style.opacity = '1'; });
     // after transition, swap to main and reset next
     setTimeout(() => {
+      if (version !== backgroundVersion) return;
       sceneBgLayer.style.backgroundImage = `url(${url})`;
       sceneBgLayer.classList.add('visible');
       sceneBgNext.style.opacity = '0';
@@ -1175,7 +1151,7 @@ function renderSidebar(state) {
 // ============================================================
 function renderScene(scene, chaosTriggered, isStart) {
   const wrap = document.createElement('div');
-  wrap.className = 'scene' + (chaosTriggered ? ' twist' : '');
+  wrap.className = 'scene';
 
   const imagePath = scene.image_path || scene.ambient_path;
   const hasImg = !!imagePath;
@@ -1207,39 +1183,16 @@ function renderScene(scene, chaosTriggered, isStart) {
   const body = document.createElement('div');
   body.className = 'body';
 
-  const tag = document.createElement('div');
-  tag.className = 'scene-tag-inline';
-  tag.innerHTML = `${ICONS.bolt} scene`;
-  body.appendChild(tag);
-
   const narration = document.createElement('div');
   narration.className = 'narration';
   const narrationText = String(scene.narration || '').trim()
-    || 'The scene changes after your last move. A new detail is waiting to be understood, and your next choice will decide which part of it matters.';
+    || 'A faint movement catches your eye nearby, while the surrounding silence waits for your response.';
   narration.textContent = narrationText;
   body.appendChild(narration);
   wrap.appendChild(body);
 
-  const meta = document.createElement('div');
-  meta.className = 'meta';
-  const ts = document.createElement('div');
-  ts.className = 'timestamp';
-  ts.innerHTML = `${ICONS.clock} ${getTimestamp()}`;
-  meta.appendChild(ts);
-
-  if (scene.choices_hint && scene.choices_hint.length) {
-    const hints = document.createElement('div');
-    hints.className = 'hints';
-    hints.innerHTML = `${ICONS.bulb} ${escapeHtml(scene.choices_hint.join('  ·  '))}`;
-    meta.appendChild(hints);
-    lastChoices = scene.choices_hint;
-  } else {
-    lastChoices = [];
-  }
-  const metaWrap = document.createElement('div');
-  metaWrap.className = 'body meta-wrap';
-  metaWrap.appendChild(meta);
-  wrap.appendChild(metaWrap);
+  const normalizedChoices = normalizeChoices(scene.choices_hint ?? scene.choices);
+  lastChoices = normalizedChoices;
   logEl.appendChild(wrap);
   scrollLogBottom();
 
@@ -1251,19 +1204,22 @@ function renderScene(scene, chaosTriggered, isStart) {
 }
 
 // ============================================================
-// CHOICE CARDS
+// CHOICE LIST
 // ============================================================
 function renderChoices(choices) {
   choicesGrid.innerHTML = '';
-  if (!choices || !choices.length) { choicesContainer.style.display = 'none'; return; }
+  const normalizedChoices = normalizeChoices(choices);
+  if (!normalizedChoices.length) { choicesContainer.style.display = 'none'; return; }
   choicesContainer.style.display = 'block';
-  choices.forEach((hint) => {
+  normalizedChoices.forEach((hint) => {
+    const item = document.createElement('li');
     const card = document.createElement('button');
     card.className = 'choice-card';
     card.type = 'button';
-    card.innerHTML = `<span class="ci">${iconForChoice(hint)}</span><span>${escapeHtml(hint)}</span>`;
+    card.textContent = hint;
     card.addEventListener('click', () => { if (!isProcessing) handlePlayerInput(hint); });
-    choicesGrid.appendChild(card);
+    item.appendChild(card);
+    choicesGrid.appendChild(item);
   });
 }
 
@@ -1334,13 +1290,6 @@ async function handlePlayerInput(text) {
 
     renderScene(data.scene, data.chaos_triggered || false, false);
 
-    if (data.chaos_triggered) {
-      const note = document.createElement('div');
-      note.className = 'twist-note';
-      note.innerHTML = `${ICONS.bolt} A twist bends the story`;
-      logEl.appendChild(note);
-      scrollLogBottom();
-    }
   } catch (e) {
     thinking.remove();
     const errBox = document.createElement('div');
@@ -1359,6 +1308,7 @@ async function handlePlayerInput(text) {
 // GAME FLOW
 // ============================================================
 function resetStorySurface(showSetup = true) {
+  backgroundVersion += 1;
   sessionId = null;
   isProcessing = false;
   lastChoices = [];

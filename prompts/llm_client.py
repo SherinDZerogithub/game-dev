@@ -1,19 +1,18 @@
 """
 llm_client.py
 
-Wraps the Google Gemini API (modern unified `google-genai` SDK) for narrative
-text generation. Handles sending the assembled prompt and safely parsing the
-structured JSON response the game engine expects.
+Wraps Gemini and Groq chat APIs for narrative text generation.
 
-Set GEMINI_API_KEY in .env. Get one free at:
-https://aistudio.google.com/app/apikey
+Groq exposes an OpenAI-compatible chat endpoint, but it is configured
+explicitly here so the app does not require a paid OpenAI-compatible account.
 """
 
 import os
 import json
 import re
 import random
-import traceback
+import urllib.error
+import urllib.request
 try:
     from google import genai
     from google.genai import types
@@ -22,8 +21,51 @@ except ImportError:  # Allows offline tests and graceful fallback without the SD
     types = None
 
 MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_BASE_URL = os.environ.get(
+    "GROQ_BASE_URL", "https://api.groq.com/openai/v1"
+).rstrip("/")
+try:
+    GROQ_MAX_OUTPUT_TOKENS = max(
+        256, int(os.environ.get("GROQ_MAX_OUTPUT_TOKENS", "700"))
+    )
+except ValueError:
+    GROQ_MAX_OUTPUT_TOKENS = 700
 
 _client = None
+_gemini_clients = {}
+
+
+def _split_api_keys(*names: str) -> list[str]:
+    """Read one or more keys from comma/newline/semicolon-separated env vars."""
+    keys = []
+    for name in names:
+        raw = os.environ.get(name, "")
+        for value in re.split(r"[,;\r\n]+", raw):
+            value = value.strip()
+            if value and value not in keys:
+                keys.append(value)
+    return keys
+
+
+def _gemini_api_keys() -> list[str]:
+    return _split_api_keys("GEMINI_API_KEYS", "GEMINI_API_KEY")
+
+
+def _groq_api_keys() -> list[str]:
+    return _split_api_keys("GROQ_API_KEYS", "GROQ_API_KEY")
+
+
+def _provider_order() -> list[str]:
+    """Return the configured provider order; Groq is the default text provider."""
+    provider = os.environ.get("LLM_PROVIDER", "groq").strip().lower()
+    if provider in {"gemini", "google"}:
+        return ["gemini"]
+    if provider in {"groq", "openai_compatible", "compatible", "alternative"}:
+        return ["groq"]
+    if provider == "auto":
+        return ["groq", "gemini"]
+    return ["groq"]
 
 
 def _is_quota_error(exc: Exception) -> bool:
@@ -56,19 +98,132 @@ def _clean_image_prompt(text: str) -> str:
     return " ".join(words[:24])
 
 
-def _get_client():
+def _join_text_blocks(*blocks: object) -> str:
+    """Join independent narration blocks with an explicit paragraph break."""
+    return "\n\n".join(
+        str(block).strip()
+        for block in blocks
+        if block is not None and str(block).strip()
+    )
+
+
+def _action_focus(action: str) -> str:
+    """Extract a diegetic subject without echoing the player's full command."""
+    focus = re.sub(
+        r"^(?:i|we|you)\s+", "", str(action or "").strip(), flags=re.IGNORECASE
+    )
+    focus = re.sub(
+        r"^(?:search|look|watch|study|inspect|examine|follow|trace|check|"
+        r"investigate|explore|approach|touch|open|read|ask|tell|say|go|walk|"
+        r"head|return|leave|wait|rest|sleep|sit|stay)\s+",
+        "",
+        focus,
+        flags=re.IGNORECASE,
+    ).strip(" .!?\t\r\n")
+    return focus
+
+
+def _get_client(api_key: str | None = None):
     global _client
     if genai is None:
         raise RuntimeError("google-genai is not installed. Install it with: pip install google-genai")
-    if _client is None:
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "GEMINI_API_KEY is not set. Create one at "
-                "https://aistudio.google.com/app/apikey and set it in .env."
-            )
-        _client = genai.Client(api_key=api_key)
+    api_key = api_key or next(iter(_gemini_api_keys()), "")
+    if not api_key:
+        raise RuntimeError(
+            "No Gemini API key is configured. Set GEMINI_API_KEYS or GEMINI_API_KEY."
+        )
+    if api_key not in _gemini_clients:
+        _gemini_clients[api_key] = genai.Client(api_key=api_key)
+    _client = _gemini_clients[api_key]
     return _client
+
+
+def _groq_text(
+    api_key: str,
+    contents: str,
+    temperature: float,
+    json_mode: bool = False,
+) -> str:
+    """Call any provider implementing POST /chat/completions."""
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": contents}],
+        "temperature": temperature,
+        "max_tokens": GROQ_MAX_OUTPUT_TOKENS,
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+    def request(body: dict) -> dict:
+        request_data = json.dumps(body).encode("utf-8")
+        request = urllib.request.Request(
+            f"{GROQ_BASE_URL}/chat/completions",
+            data=request_data,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "Lumen/2.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Groq HTTP {exc.code}: {detail[:500]}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise RuntimeError(f"Groq connection failed: {exc}") from exc
+
+    try:
+        data = request(payload)
+    except RuntimeError as exc:
+        # Some OpenAI-compatible services do not implement response_format.
+        # Retrying once without it still lets _extract_json parse the answer.
+        if json_mode and "HTTP 400" in str(exc):
+            payload.pop("response_format", None)
+            data = request(payload)
+        else:
+            raise
+
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError("Groq returned no message content") from exc
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return str(content)
+
+
+def _generate_text(
+    provider: str,
+    api_key: str,
+    contents: str,
+    temperature: float,
+    json_mode: bool = False,
+) -> str:
+    if provider == "gemini":
+        client = _get_client(api_key)
+        config_args = {"temperature": temperature}
+        if json_mode:
+            config_args["response_mime_type"] = "application/json"
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=contents,
+            config=types.GenerateContentConfig(**config_args),
+        )
+        return response.text
+    return _groq_text(api_key, contents, temperature, json_mode)
+
+
+def _provider_attempts():
+    for provider in _provider_order():
+        keys = _gemini_api_keys() if provider == "gemini" else _groq_api_keys()
+        for index, api_key in enumerate(keys, start=1):
+            yield provider, index, api_key
 
 
 def _extract_json(raw_text: str) -> dict:
@@ -87,53 +242,56 @@ def _extract_json(raw_text: str) -> dict:
 
 
 def generate_turn(full_prompt: str, temperature: float = 0.9, last_consequences: list | None = None) -> dict:
-    """Send the assembled prompt to Gemini and return the parsed structured dict."""
-    try:
-        client = _get_client()
-    except RuntimeError as exc:
-        print(f"[llm_client] Gemini unavailable, using fallback turn: {exc}")
-        return _fallback_turn(full_prompt, last_consequences)
+    """Generate a turn, rotating keys and providers before using local fallback."""
+    contents = (
+        full_prompt
+        + "\n\n[RESPONSE-LEVEL ANTI-TEMPLATE RULE]\n"
+        + "Do not use fixed bridge sentences such as 'The discovery changes what "
+        + "the next step can be' or 'it points toward'. End with a concrete "
+        + "physical, social, or environmental consequence unique to this scene."
+    )
+    attempted = False
+    for provider, key_index, api_key in _provider_attempts():
+        attempted = True
+        try:
+            raw_text = _generate_text(provider, api_key, contents, temperature, json_mode=True)
+            result = _extract_json(raw_text)
+            if not isinstance(result, dict):
+                raise ValueError("Model response must be a JSON object")
+            if not str(result.get("narration", "")).strip():
+                fallback = _fallback_turn(full_prompt, last_consequences)
+                result["narration"] = fallback["narration"]
+                if not result.get("image_prompt"):
+                    result["image_prompt"] = fallback["image_prompt"]
+                if not result.get("choices_hint") and not result.get("choices"):
+                    result["choices_hint"] = fallback["choices_hint"]
+            choices = result.get("choices_hint", result.get("choices", []))
+            if not isinstance(choices, list) or len(choices) < 3:
+                choices = _generate_dynamic_choices(full_prompt, result.get("narration", ""))
+            result["choices_hint"] = choices[:3] if isinstance(choices, list) else []
+            print(f"[llm_client] turn generated with {provider} key #{key_index}")
+            return result
+        except Exception as exc:
+            reason = "quota/provider error" if _is_quota_error(exc) else "request failed"
+            print(
+                f"[llm_client] {provider} key #{key_index} {reason}; trying the next key/provider: {exc}"
+            )
 
-    try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=(
-                full_prompt
-                + "\n\n[RESPONSE-LEVEL ANTI-TEMPLATE RULE]\n"
-                + "Do not use fixed bridge sentences such as 'The discovery changes what "
-                + "the next step can be' or 'it points toward'. End with a concrete "
-                + "physical, social, or environmental consequence unique to this scene."
-            ),
-            config=types.GenerateContentConfig(
-                temperature=temperature,
-                response_mime_type="application/json",
-            ),
+    if not attempted:
+        print(
+            "[llm_client] No usable API keys configured; using fallback turn. "
+            "Set GROQ_API_KEYS or GEMINI_API_KEYS."
         )
-        result = _extract_json(response.text)
-        if not isinstance(result, dict):
-            raise ValueError("Model response must be a JSON object")
-        if not str(result.get("narration", "")).strip():
-            fallback = _fallback_turn(full_prompt, last_consequences)
-            result["narration"] = fallback["narration"]
-            if not result.get("image_prompt"):
-                result["image_prompt"] = fallback["image_prompt"]
-            if not result.get("choices_hint") and not result.get("choices"):
-                result["choices_hint"] = fallback["choices_hint"]
-        choices = result.get("choices_hint", result.get("choices", []))
-        # Ensure we have exactly 3 dynamic choices
-        if not isinstance(choices, list) or len(choices) < 3:
-            choices = _generate_dynamic_choices(full_prompt, result.get("narration", ""))
-        result["choices_hint"] = choices[:3] if isinstance(choices, list) else []
-        return result
-    except Exception as exc:
-        reason = "quota/provider error" if _is_quota_error(exc) else "Gemini request failed"
-        print(f"[llm_client] {reason}, using fallback turn: {exc}")
-        traceback.print_exc()
-        return _fallback_turn(full_prompt, last_consequences)
+    return _fallback_turn(full_prompt, last_consequences)
 
 
 def _section(full_prompt: str, name: str) -> str:
-    pattern = rf"\[{re.escape(name)}\]\s*(.*?)(?=\n\[[A-Z][A-Z \u2014-]*\]|\Z)"
+    # Section headers are human-readable and may contain punctuation such as
+    # ``&`` or parentheses.  Restricting the lookahead to uppercase letters
+    # made ``[FINITE STATE MACHINE — STRICT LOCATION & GOAL LOCK]`` invisible,
+    # so the STORY SUMMARY section accidentally swallowed the entire FSM block.
+    # That corrupted every offline fallback context after the opening turn.
+    pattern = rf"\[{re.escape(name)}\]\s*(.*?)(?=\n\[[^\]\n]+\]|\Z)"
     match = re.search(pattern, full_prompt, re.DOTALL)
     return match.group(1).strip() if match else ""
 
@@ -147,6 +305,17 @@ def _fsm_field(full_prompt: str, field: str) -> str:
         value = match.group(1).strip()
         return value.splitlines()[0].strip()
     return ""
+
+
+def _fsm_bulleted_field(full_prompt: str, field: str) -> str:
+    """Extract a multi-line bulleted field from the FSM block, e.g. the
+    'ALREADY DISCOVERED (FLAG GUARD):' list. This field is plain text inside
+    the FSM block (not a `[SECTION]` header), so `_section()` can never find
+    it — only the '  - bullet' lines immediately under the field label are
+    captured, stopping before the explanatory sentence beneath them."""
+    pattern = rf"^{re.escape(field)}:\s*\n((?:  - .*(?:\n|\Z))*)"
+    match = re.search(pattern, full_prompt, re.MULTILINE)
+    return match.group(1).strip() if match else ""
 
 
 def _extract_context_from_prompt(full_prompt: str) -> dict:
@@ -176,16 +345,29 @@ def _extract_context_from_prompt(full_prompt: str) -> dict:
 
     # Location is now in the FSM block under "CURRENT LOCATION:" rather than
     # a standalone [LOCATION] section.
-    location = (
-        _section(full_prompt, "LOCATION")
-        or _fsm_field(full_prompt, "CURRENT LOCATION")
+    location = _section(full_prompt, "LOCATION") or _fsm_field(
+        full_prompt, "CURRENT LOCATION"
     )
 
-    # Already-discovered facts live inside the FSM block now.
+    # Already-discovered facts live inside the FSM block as a plain-text
+    # bulleted field (not a `[SECTION]` header), so they must be read with
+    # `_fsm_bulleted_field`, not `_section`. The old `_section(...)` calls
+    # below always returned "" because they searched for a literal
+    # "[ALREADY DISCOVERED (FLAG GUARD)]" header that never appears in the
+    # prompt — this silently disabled the flag-guard rotation in
+    # `_consequence_already_known` for every fallback turn.
     already_discovered = (
-        _section(full_prompt, "ALREADY DISCOVERED \u2014 DO NOT RE-NARRATE THESE")
+        _fsm_bulleted_field(full_prompt, "ALREADY DISCOVERED (FLAG GUARD)")
+        or _section(full_prompt, "ALREADY DISCOVERED \u2014 DO NOT RE-NARRATE THESE")
         or _section(full_prompt, "ALREADY DISCOVERED (FLAG GUARD)")
     )
+
+    active_characters = (
+        _fsm_bulleted_field(full_prompt, "ACTIVE CHARACTERS PRESENT")
+        or _section(full_prompt, "ACTIVE CHARACTERS PRESENT")
+    )
+    current_goal = _fsm_field(full_prompt, "CURRENT GOAL")
+    open_threads = _fsm_bulleted_field(full_prompt, "OPEN STORY THREADS")
 
     return {
         "world_prompt": _section(full_prompt, "WORLD PREMISE / PLAYER-GIVEN PROMPT"),
@@ -197,7 +379,9 @@ def _extract_context_from_prompt(full_prompt: str) -> dict:
         "inventory": _section(full_prompt, "INVENTORY"),
         "flags": _section(full_prompt, "FLAGS"),
         "location": location,
-        "active_characters": _section(full_prompt, "ACTIVE CHARACTERS PRESENT"),
+        "active_characters": active_characters,
+        "current_goal": current_goal,
+        "open_threads": open_threads,
         "last_choices": _section(full_prompt, "LAST SUGGESTIONS"),
         "already_discovered": already_discovered,
     }
@@ -362,6 +546,52 @@ def _is_passive_action(action_lower: str) -> bool:
     ))
 
 
+MOVEMENT_WORDS = (
+    "back", "return", "go", "head", "walk", "follow", "leave", "travel",
+    "enter", "climb", "cross", "approach", "move", "run", "sail", "ride",
+)
+
+
+def _is_movement_action(action_lower: str) -> bool:
+    return any(
+        re.search(rf"\b{re.escape(word)}\b", action_lower)
+        for word in MOVEMENT_WORDS
+    )
+
+
+def _requested_location(action_lower: str) -> str:
+    """Extract a named destination from a free-form movement action.
+
+    The fallback narrator cannot infer arbitrary geography, but it can safely
+    honor the common destinations players type.  Returning an empty string is
+    intentional: a movement without a named destination falls back to the
+    story's established lead rather than inventing a room.
+    """
+    destinations = (
+        ("back room", "the bakery back room"),
+        ("kitchen", "the bakery kitchen"),
+        ("bookshop", "the bookshop doorway"),
+        ("lighthouse", "the lighthouse stairwell"),
+        ("lantern room", "the lighthouse lantern room"),
+        ("relay", "the relay station"),
+        ("station", "the last platform"),
+        ("platform", "the last platform"),
+        ("alley", "the alley"),
+        ("bar", "the bar"),
+        ("diner", "the diner"),
+        ("office", "the office"),
+        ("rooftop", "the rooftop"),
+        ("hotel", "the hotel"),
+        ("shore", "the shore"),
+        ("forest", "the old forest road"),
+        ("road", "the old forest road"),
+    )
+    for keyword, destination in destinations:
+        if re.search(rf"\b{re.escape(keyword)}\b", action_lower):
+            return destination
+    return ""
+
+
 def _choice_repeats_action(choice: str, action_lower: str) -> bool:
     """Reject suggestions that would make the player repeat the just-finished beat."""
     choice_lower = choice.lower()
@@ -451,9 +681,13 @@ def _dialogue_subject(context: dict, profile: dict) -> str | None:
     return None
 
 
-def _generate_dynamic_choices(full_prompt: str, narration: str) -> list:
+def _generate_dynamic_choices(
+    full_prompt: str, narration: str, location_override: str | None = None
+) -> list:
     """Generate 3 dynamic, context-aware choices based on the current scene."""
     context = _extract_context_from_prompt(full_prompt)
+    if location_override:
+        context["location"] = location_override
     raw_action = _extract_player_action(full_prompt)
     action = re.sub(r"^\(Game start\)\s*", "", raw_action, flags=re.IGNORECASE).strip()
     action = action or "take stock of your surroundings"
@@ -464,6 +698,11 @@ def _generate_dynamic_choices(full_prompt: str, narration: str) -> list:
     
     profile = _story_profile(context, narration)
     current_choices = context.get("last_choices", "")
+    current_choice_norms = {
+        " ".join(re.findall(r"[a-z0-9]+", line.lower().lstrip("- ")))
+        for line in str(current_choices).splitlines()
+        if line.strip() and line.strip().lstrip("- ").strip().lower() != "none"
+    }
     already_discovered = context.get("already_discovered", "")
     story_text = " ".join(str(context.get(key, "")) for key in (
         "world_prompt", "story_summary", "recent_turns", "recent_narrations", "last_narration"
@@ -637,7 +876,7 @@ def _generate_dynamic_choices(full_prompt: str, narration: str) -> list:
     for choice in choices_pool:
         # Normalize for comparison
         norm = " ".join(re.findall(r"[a-z0-9]+", choice.lower()))
-        if (norm and norm not in seen and norm not in current_choices
+        if (norm and norm not in seen and norm not in current_choice_norms
                 and not _choice_repeats_action(choice, action_lower)
                 and not _consequence_already_known(choice, already_discovered)):
             seen.add(norm)
@@ -774,8 +1013,18 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
     # ring buffer is appended to on every fallback turn), giving a reliable,
     # ever-increasing rotation signal even when the action text repeats and
     # the hash-based variant below would otherwise collide.
-    turn_offset = len(last_consequences or [])
-    variant = (_seed_for(action + context["last_narration"]) + previous_count + turn_offset) % 7
+    turn_offset = len(last_consequences or []) + len(
+        [line for line in context["recent_narrations"].splitlines() if line.strip()]
+    )
+    variant = (
+        _seed_for(
+            action
+            + context["last_narration"]
+            + context["recent_narrations"]
+        )
+        + previous_count
+        + turn_offset
+    ) % 7
     is_lore_question = _is_lore_question(action_lower)
 
     if raw_action.lower().startswith("(game start)"):
@@ -827,7 +1076,21 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
 
         # Location-specific pools are checked FIRST so that moving to a bar,
         # alley, or other new room never loops back to a street/case-file clue.
-        current_location = context.get("location", "").lower()
+        current_location_value = str(context.get("location", "") or "").strip()
+        if current_location_value.lower() in {"unknown", "none", "- none"}:
+            current_location_value = ""
+        current_location = current_location_value.lower()
+        requested_location = _requested_location(action_lower)
+        if requested_location:
+            scene_location = requested_location
+        elif _is_movement_action(action_lower) and current_location_value:
+            # A movement with no named destination follows the established
+            # story lead.  A normal action stays exactly where the FSM says
+            # the player is, preventing the fallback from teleporting back to
+            # a preset's opening location every turn.
+            scene_location = profile["place"]
+        else:
+            scene_location = current_location_value
         location_consequence_map: dict[str, list[str]] = {
             "bar": [
                 "the bartender slides a folded note down the counter without meeting your eyes",
@@ -874,7 +1137,7 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
         # Match current location to a specific pool.
         location_consequences: list[str] | None = None
         for loc_key, loc_pool in location_consequence_map.items():
-            if loc_key in current_location:
+            if loc_key in scene_location.lower():
                 location_consequences = loc_pool
                 break
 
@@ -889,21 +1152,29 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
                 "the journal opens to a tide chart marked with tomorrow's date",
                 "the beam turns by itself and illuminates a boat where no boat should be",
                 "saltwater rises through the stairwell, carrying the previous keeper's key",
+                "the fog horn sounds once on its own, though no ship answers it",
+                "a second set of footprints, still wet, leads up from the stairwell you just climbed",
             ],
             "scifi": [
                 "the signal answers with a precise copy of your own voice",
                 "the relay maps a second station hidden inside the dead transmission",
                 "the station loses artificial gravity just as the message becomes readable",
+                "a countdown appears on the display, counting toward an event no one logged",
+                "the airlock cycles by itself, though the manifest shows no one else aboard",
             ],
             "fantasy": [
                 "the stone key warms and redraws one road on the impossible map",
                 "the forest rearranges its trees, opening a path beneath blue fireflies",
                 "a royal seal appears in the soil, buried beside footprints made by no human",
+                "the map's ink bleeds sideways, sketching a second road no one has walked",
+                "the stone key grows warm enough to hurt, pulling gently toward the forest's heart",
             ],
             "bakery": [
                 "the oven rings though nothing is baking, and a warm loaf bears your name",
                 "the midnight customer leaves a recipe written in ink that is still wet",
                 "the back room door opens onto the bakery as it looked thirty years ago",
+                "flour drifts from an empty shelf and settles into the shape of a handprint",
+                "the till opens on its own, holding coins from a currency long out of use",
             ],
         }
         # Intent-action binding: a "why"/backstory/motive question is answered
@@ -913,13 +1184,13 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
         # physical object instead of answering the question that was asked.
         if is_lore_question:
             consequence, _active_pool = _lore_consequence(profile, variant)
-            consequence_place = current_location or profile["place"]
+            consequence_place = scene_location or profile["place"]
         elif profile["kind"] == "romance":
             consequence, consequence_place, _active_pool = _romance_consequence(context, action_lower, variant)
         elif location_consequences:
             # Location-specific pool wins: this prevents the bar/alley loop.
             consequence = location_consequences[variant % len(location_consequences)]
-            consequence_place = current_location or profile["place"]
+            consequence_place = scene_location or profile["place"]
             _active_pool = location_consequences
         else:
             default_pool = [
@@ -935,7 +1206,7 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
             # rotation guards below for those kinds.
             consequences = consequence_sets.get(profile["kind"]) or default_pool
             consequence = consequences[variant % len(consequences)]
-            consequence_place = profile["place"]
+            consequence_place = scene_location or profile["place"]
             _active_pool = consequences
 
         # Flag guard: if this consequence re-describes something the player
@@ -952,77 +1223,109 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
         # fallback turns so we never repeat the same sentence back-to-back.
         _used = set(last_consequences or [])
         if consequence in _used and len(_active_pool) > 1:
+            _rotated = False
             for _offset in range(1, len(_active_pool)):
                 _candidate = _active_pool[(variant + _offset) % len(_active_pool)]
                 if _candidate not in _used and not _consequence_already_known(
                     _candidate, already_discovered
                 ):
                     consequence = _candidate
+                    _rotated = True
                     break
+            if not _rotated:
+                # Every entry in this small pool has already been used within
+                # the ring-buffer window (previously this branch silently fell
+                # through and kept repeating the same sentence verbatim, e.g.
+                # "saltwater rises through the stairwell..." three times in a
+                # row). Instead, pick whichever pool entry was used longest
+                # ago rather than the one used most recently.
+                _history = list(last_consequences or [])
+
+                def _recency(_item: str) -> int:
+                    try:
+                        return _history.index(_item)
+                    except ValueError:
+                        return -1
+
+                _candidates = [c for c in _active_pool if c != consequence] or list(_active_pool)
+                consequence = min(_candidates, key=_recency)
 
         clean_action = action.rstrip(".!?")
+        action_focus = _action_focus(action)
+        focus_intro = (
+            f"Your attention settles on {action_focus}."
+            if action_focus
+            else "Your attention settles on the immediate scene."
+        )
 
         # Build narration around the player's action and a concrete world change.
         # No fixed "discovery changes..." bridge is used anywhere.
         close = _progression_close(clean_action, consequence, profile, variant, turn_offset)
 
         if is_lore_question:
-            # Dedicated thematic-reveal template. Checked before the movement/
-            # dialogue/item templates below so a phrase like "take a risk to
-            # learn why..." is bound to the reveal, not the item template
-            # (which would otherwise match on the word "take").
-            narration = (
-                f"{repeated_note}You {clean_action}. "
-                f"{consequence[0].upper()}{consequence[1:]}. "
-                f"{close}"
+            # Dedicated thematic-reveal template. The action is used for intent
+            # selection above, but the raw command never becomes player-facing prose.
+            narration = _join_text_blocks(
+                repeated_note,
+                focus_intro,
+                f"{consequence[0].upper()}{consequence[1:]}.",
+                close,
             )
         elif any(re.search(rf"\b{re.escape(word)}\b", action_lower) for word in (
             "back", "return", "path", "go", "head", "walk", "follow", "leave"
         )):
-            dest = consequence_place if consequence_place != profile["place"] else (
-                current_location or profile["place"]
-            )
-            narration = (
-                f"{repeated_note}You {clean_action}. "
-                f"The place you left recedes; {dest} fills the frame instead. "
-                f"Here, {consequence}. "
-                f"{close}"
+            dest = consequence_place or scene_location or profile["place"]
+            narration = _join_text_blocks(
+                repeated_note,
+                focus_intro,
+                f"The place you left recedes; {dest} fills the frame instead.",
+                f"Here, {consequence}.",
+                close,
             )
         elif any(re.search(rf"\b{re.escape(word)}\b", action_lower) for word in (
             "talk", "ask", "call", "say", "tell", "speak", "answer"
         )):
             subject = _dialogue_subject(context, profile)
             if subject:
-                narration = (
-                    f"{repeated_note}Your words land harder than expected. {subject} "
-                    f"hesitates, then reveals that {consequence}. Their reaction changes "
-                    f"the balance of the scene. {close}"
+                narration = _join_text_blocks(
+                    repeated_note,
+                    f"Your words land harder than expected. {subject} hesitates, then "
+                    f"reveals that {consequence}.",
+                    f"Their reaction changes the balance of the scene. {close}",
                 )
             else:
-                narration = (
-                    f"{repeated_note}Your question hangs in the air. After a tense pause, "
-                    f"the scene reveals that {consequence}. The new information changes "
-                    f"the balance of the scene. {close}"
+                narration = _join_text_blocks(
+                    repeated_note,
+                    "Your question hangs in the air. After a tense pause, "
+                    f"the scene reveals that {consequence}.",
+                    f"The new information changes the balance of the scene. {close}",
                 )
         elif any(re.search(rf"\b{re.escape(word)}\b", action_lower) for word in (
             "drink", "eat", "take", "grab", "use", "open", "touch", "pick"
         )):
-            narration = (
-                f"{repeated_note}You {clean_action}. The object refuses to remain passive: "
-                f"{consequence}. Its response alters what is physically possible here. "
-                f"{close}"
+            narration = _join_text_blocks(
+                repeated_note,
+                focus_intro,
+                "The object refuses to remain passive: "
+                f"{consequence}. Its response alters what is physically possible here.",
+                close,
             )
         elif _is_passive_action(action_lower):
-            narration = (
-                f"{repeated_note}You {clean_action}. Time slips by, but the world does not "
-                f"wait with you: {consequence}. {close}"
+            narration = _join_text_blocks(
+                repeated_note,
+                "Time slips by, but the world does not wait with you: "
+                f"{consequence}.",
+                close,
             )
         else:
             transition = _consequence_transition(
                 action_lower, consequence, profile["kind"], turn_offset
             )
-            narration = (
-                f"{repeated_note}You {clean_action}. {transition}. {close}"
+            narration = _join_text_blocks(
+                repeated_note,
+                focus_intro,
+                f"{transition}.",
+                close,
             )
 
         _genre_visuals = {
@@ -1045,7 +1348,9 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
             )
         else:
             image_prompt = f"{consequence_place}; {_visual_context}; {consequence}"
-        choices = _generate_dynamic_choices(full_prompt, narration)
+        choices = _generate_dynamic_choices(
+            full_prompt, narration, location_override=consequence_place
+        )
         profile = _story_profile(context, narration)
         location_update = consequence_place
         thread_update = profile["thread"]
@@ -1086,13 +1391,7 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
 
 
 def summarize(history_text: str) -> str:
-    """Compress recent story turns into a short rolling summary (1-3 sentences)."""
-    try:
-        client = _get_client()
-    except RuntimeError as exc:
-        print(f"[llm_client] Gemini unavailable, using fallback summary: {exc}")
-        return _fallback_summary(history_text)
-
+    """Compress recent story turns, rotating through configured providers."""
     prompt = (
         "Summarize the following interactive story so far into 2-3 concise "
         "sentences. Preserve key facts: important items, character names, "
@@ -1100,18 +1399,21 @@ def summarize(history_text: str) -> str:
         f"STORY SO FAR:\n{history_text}\n\nSUMMARY:"
     )
 
-    try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.3),
-        )
-        return response.text.strip()
-    except Exception as exc:
-        reason = "quota/provider error" if _is_quota_error(exc) else "Gemini request failed"
-        print(f"[llm_client] {reason}, using fallback summary: {exc}")
-        traceback.print_exc()
-        return _fallback_summary(history_text)
+    for provider, key_index, api_key in _provider_attempts():
+        try:
+            summary = _generate_text(provider, api_key, prompt, 0.3).strip()
+            if summary:
+                print(f"[llm_client] summary generated with {provider} key #{key_index}")
+                return summary
+        except Exception as exc:
+            reason = "quota/provider error" if _is_quota_error(exc) else "request failed"
+            print(
+                f"[llm_client] {provider} key #{key_index} {reason}; "
+                f"trying the next key/provider: {exc}"
+            )
+
+    print("[llm_client] No provider completed the summary; using local fallback summary.")
+    return _fallback_summary(history_text)
 
 
 def _fallback_summary(history_text: str) -> str:

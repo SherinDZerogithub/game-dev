@@ -20,9 +20,9 @@ themes. Designed for showcasing in a portfolio and on LinkedIn.
   crossfades smoothly between scenes.
 - **Dark overlay layers.** A radial + linear dark gradient (plus a subtle film
   grain) sits over every background image so white text always stays readable.
-- **New image API key.** Wired to your Gemini key for both narration
-  (`gemini-2.0-flash`) and scene images (`gemini-2.5-flash-image`), with an
-  automatic free Pollinations fallback if the image quota runs out.
+- **Flexible AI providers.** Groq is the default text provider, with optional
+  Gemini fallback and rotation across multiple keys when a key is rate-limited
+  or exhausted.
 - **More interactive UI.** Curated starting-world preset cards, animated
   choice cards, twist mode, animated vitals, achievement toasts, smooth
   crossfades and entrance animations.
@@ -34,9 +34,9 @@ themes. Designed for showcasing in a portfolio and on LinkedIn.
 ## Tech stack
 
 - **Backend:** FastAPI + Pydantic v2
-- **AI:** Google Gemini via `google-genai`
-  - narration: `gemini-2.0-flash`
-  - scene images: `gemini-2.5-flash-image`
+- **AI:** Groq chat API for narration, with optional Google Gemini support
+  - narration: `llama-3.1-8b-instant`
+  - scene images: Hugging Face `Qwen/Qwen-Image` or Gemini
 - **Image fallback:** Pollinations free image API (no key)
 - **Persistence:** SQLite
 - **Frontend:** single-file HTML + CSS + vanilla JS (glassmorphism, inline SVG icons)
@@ -50,13 +50,35 @@ cd lumen
 pip install -r requirements.txt
 ```
 
-Your Gemini key is already set in `prompts/.env`:
+Copy `prompts/.env.example` to `prompts/.env`, then add your keys. The app
+accepts multiple keys separated by commas or new lines:
 
 ```
-GEMINI_API_KEY=''
+# Groq is the free text-generation provider.
+LLM_PROVIDER=groq
+GROQ_API_KEYS=your-groq-key-1,your-groq-key-2
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+GROQ_MODEL=llama-3.1-8b-instant
+
+# Use Hugging Face for images, with Pollinations as the final fallback.
+IMAGE_PROVIDER=huggingface
+HF_API_KEYS=hf_token_one,hf_token_two
+HF_IMAGE_MODEL=Qwen/Qwen-Image
+HF_IMAGE_PROVIDER=fal-ai
 ```
 
-Get a free key or rotate it at https://aistudio.google.com/app/apikey.
+`LLM_PROVIDER=auto` tries every Groq key, then every Gemini key. Set
+`LLM_PROVIDER=gemini` to use Gemini only. To avoid Gemini for images too, set
+`IMAGE_PROVIDER=huggingface` or `IMAGE_PROVIDER=pollinations`.
+
+Hugging Face requires a user token with **Inference Providers** permission.
+`Qwen/Qwen-Image` is the default image model; use `HF_IMAGE_MODEL` to switch
+models and `HF_IMAGE_PROVIDER` to select a hosted provider. Hugging Face’s
+current text-to-image docs also list FLUX.1-Krea-dev and ByteDance/Hyper-SD
+as alternatives.
+
+The single-key variables `GROQ_API_KEY` and `GEMINI_API_KEY` also work.
+Never commit `prompts/.env` or paste real keys into source code.
 
 ---
 
