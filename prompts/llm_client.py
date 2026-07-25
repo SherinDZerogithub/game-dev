@@ -207,8 +207,13 @@ def _seed_for(text: str) -> int:
     return sum((index + 1) * ord(char) for index, char in enumerate(text or ""))
 
 
-def _romance_consequence(context: dict, action_lower: str, variant: int) -> tuple[str, str]:
-    """Choose a romance event that belongs to the current location."""
+def _romance_consequence(context: dict, action_lower: str, variant: int) -> tuple[str, str, list[str]]:
+    """Choose a romance event that belongs to the current location.
+
+    Returns (event, place, pool) — the pool is the exact list the event was
+    drawn from, so callers can correctly rotate away from an already-used
+    event instead of silently falling back to an empty list.
+    """
     location = context.get("location", "").lower()
     moves_to_station = any(word in action_lower for word in (
         "station", "train", "platform", "railway", "leave", "head to", "go to"
@@ -219,45 +224,134 @@ def _romance_consequence(context: dict, action_lower: str, variant: int) -> tupl
             "the departure board flickers to a name that was removed years ago",
             "a familiar figure waits beneath the last platform lamp, holding the missing half of the letter",
             "the Vienna train is already breathing at the platform, though dawn is still hours away",
+            "a porter recognizes the handwriting on your letter and goes pale",
+            "the station clock is frozen at the exact hour named in the letter",
         ]
-        return events[variant % len(events)], "the last platform"
+        return events[variant % len(events)], "the last platform", events
 
     if any(word in action_lower for word in ("margin", "symbol", "letter", "envelope", "seal")):
-        return "the sealed letter reveals a confession written in the margins after the sender disappeared", context.get("location") or "the bookshop doorway"
+        events = [
+            "the sealed letter reveals a confession written in the margins after the sender disappeared",
+            "the wax seal, held to the light, hides a second, smaller message beneath it",
+        ]
+        return events[variant % len(events)], context.get("location") or "the bookshop doorway", events
 
     events = [
         "a brass train token is wedged beneath the threshold, stamped with tomorrow's date",
         "the loose doorplate lifts in the wind, revealing a thread of blue paper from the letter",
         "fresh saltwater darkens the doorstep in the shape of a single footprint pointing inland",
+        "a pressed flower slips from between two books, matching the one folded into the letter",
+        "the bell above the door rings once on its own, with no wind to explain it",
     ]
-    return events[variant % len(events)], context.get("location") or "the bookshop doorway"
+    return events[variant % len(events)], context.get("location") or "the bookshop doorway", events
 
 
-def _consequence_transition(action_lower: str, consequence: str, kind: str) -> str:
+# ---------------------------------------------------------------------------
+# INTENT-ACTION BINDING
+#
+# A question about *why* something happened (motive, history, backstory) is a
+# fundamentally different kind of action than physically searching a room. It
+# must be answered from a lore/reveal pool, never from the physical-item pool
+# — otherwise "take a risk to learn why..." gets matched by the word "take"
+# and re-spawns a physical object instead of answering the question asked.
+# ---------------------------------------------------------------------------
+LORE_INTENT_PATTERNS = (
+    "why", "reason", "understand why", "learn why", "history of", "the past",
+    "meaning of", "backstory", "motive", "explain", "what happened to",
+    "risk to learn", "find out why", "who they were", "what changed them",
+)
+
+
+def _is_lore_question(action_lower: str) -> bool:
+    """True when the player is asking about motive/backstory rather than a physical object."""
+    return any(pattern in action_lower for pattern in LORE_INTENT_PATTERNS)
+
+
+LORE_REVEAL_SETS: dict[str, list[str]] = {
+    "noir": [
+        "the caller waited because they were the one who filed the case away ten years ago, and only now found the nerve to reopen it",
+        "the silence was never guilt — naming the caller sooner would have gotten you both killed",
+        "an old report surfaces the real reason: the case was never closed, only hidden from you specifically",
+    ],
+    "romance": [
+        "the sender waited ten years because your last reply never arrived — it was intercepted before it reached Vienna",
+        "the silence was a promise: to wait until it was finally safe to write again, and that day only just came",
+        "the ten years make sense the moment you realize the sender was waiting for you to stop searching for someone else",
+    ],
+    "lighthouse": [
+        "the previous keeper vanished the night they realized the beam was never meant to guide ships in — it called them out",
+        "the warning about midnight exists because that is the hour the strait remembers every ship it has ever taken",
+        "the journal explains it plainly: the light was never for sailors. It was for something coming home",
+    ],
+    "scifi": [
+        "the silent galaxy was never empty; it went quiet the moment it heard a signal identical to your own voice, decades ago",
+        "mission control's twelve-hour delay was deliberate — someone wanted this signal to reach you and no one else first",
+        "the impossible signal is a recording of this exact conversation, sent from a version of the relay not yet built",
+    ],
+    "fantasy": [
+        "the map exists because your grandmother walked that road once and chose to erase it from every other chart in the kingdom",
+        "the stone hums because it remembers a promise your grandmother made to whatever waits at the road's end",
+        "the road was hidden because the last person who found it was never seen leaving — only arriving, again and again",
+    ],
+    "bakery": [
+        "the midnight customer keeps returning because the last thing said between you was never finished, thirty years ago",
+        "the bakery only opens at midnight because that is the one hour the customer is still allowed to remember being alive",
+        "the recipe they keep asking for was the last thing anyone made for them — making it again is the only way they can leave in peace",
+    ],
+}
+
+
+def _lore_consequence(profile: dict, variant: int) -> tuple[str, list[str]]:
+    """Return a thematic, motive-level reveal instead of a physical-object spawn."""
+    pool = LORE_REVEAL_SETS.get(profile["kind"])
+    if not pool:
+        pool = [
+            f"the truth behind {profile['thread']} finally comes into focus, recontextualizing everything before this",
+            f"a memory or record surfaces that explains {profile['thread']} in a way you did not expect",
+        ]
+    return pool[variant % len(pool)], pool
+
+
+def _consequence_transition(action_lower: str, consequence: str, kind: str, turn_offset: int = 0) -> str:
+    """Pick a sentence that leads into the consequence. Purely diegetic — no
+    meta-commentary like the literal word 'consequence' should appear here."""
     transitions = [
         f"The detail answers your search: {consequence}",
         f"Your attention catches the change. {consequence.capitalize()}",
         f"A small movement breaks the stillness—{consequence}",
+        f"Something shifts at the edge of your vision: {consequence}",
+        f"The room itself seems to answer you: {consequence}",
+        f"You almost miss it, then can't unsee it: {consequence}",
+        f"It takes a second look to be sure, but there it is: {consequence}",
     ]
-    return transitions[_seed_for(action_lower + consequence + kind) % len(transitions)]
+    index = (_seed_for(action_lower + consequence + kind) + turn_offset) % len(transitions)
+    return transitions[index]
 
 
-def _progression_close(action: str, consequence: str, profile: dict, variant: int) -> str:
-    """Close a fallback turn with a concrete changed situation, not a fixed template."""
+def _progression_close(action: str, consequence: str, profile: dict, variant: int, turn_offset: int = 0) -> str:
+    """Close a fallback turn with a concrete changed situation, not a fixed template.
+
+    None of these lines use meta language like "the consequence" — they describe
+    the in-world state change directly, so the narration never announces its own
+    mechanics to the player.
+    """
     object_name = profile.get("object", "the clue")
     place = profile.get("place", "the current scene")
     thread = profile.get("thread", "the unresolved mystery")
     closers = [
         f"Now {object_name} is no longer background detail; it demands an immediate decision.",
-        f"The change leaves {place} altered, with the danger and opportunity both visible.",
-        f"Before the moment can settle, the consequence forces you to choose how to respond.",
-        f"What happened makes one thing clear: staying passive will let the situation move without you.",
+        f"{place.capitalize()} feels different now — danger and opportunity both in plain sight.",
+        f"Whatever happens next, {thread} cannot wait any longer.",
+        f"Staying passive here would let the situation move on without you.",
         f"The scene has shifted around you, and the next move must deal with {thread} directly.",
         f"A physical trace remains at {place}, giving you something concrete to act on.",
-        f"The consequence narrows your options, but it also exposes a route forward.",
+        f"There is no going back to how {place} looked a moment ago.",
+        f"You will have to decide what to do about {object_name} before it changes again.",
+        f"Whoever — or whatever — caused this is still close enough to matter.",
     ]
     seed_text = f"{action}|{consequence}|{object_name}|{place}|{thread}|{variant}"
-    return closers[_seed_for(seed_text) % len(closers)]
+    index = (_seed_for(seed_text) + turn_offset) % len(closers)
+    return closers[index]
 
 
 
@@ -676,7 +770,13 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
         if " ".join(re.findall(r"[a-z0-9]+", old.lower()))
         == " ".join(re.findall(r"[a-z0-9]+", action_lower))
     )
-    variant = (_seed_for(action + context["last_narration"]) + previous_count) % 7
+    # turn_offset grows by one every time the fallback engine is invoked (the
+    # ring buffer is appended to on every fallback turn), giving a reliable,
+    # ever-increasing rotation signal even when the action text repeats and
+    # the hash-based variant below would otherwise collide.
+    turn_offset = len(last_consequences or [])
+    variant = (_seed_for(action + context["last_narration"]) + previous_count + turn_offset) % 7
+    is_lore_question = _is_lore_question(action_lower)
 
     if raw_action.lower().startswith("(game start)"):
         premise = context["world_prompt"] or action
@@ -806,28 +906,41 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
                 "the back room door opens onto the bakery as it looked thirty years ago",
             ],
         }
-        if profile["kind"] == "romance":
-            consequence, consequence_place = _romance_consequence(context, action_lower, variant)
+        # Intent-action binding: a "why"/backstory/motive question is answered
+        # from the lore-reveal pool, never the physical-item pool. This check
+        # runs FIRST because otherwise phrases like "take a risk to learn why
+        # ..." get matched by the word "take" further down and re-spawn a
+        # physical object instead of answering the question that was asked.
+        if is_lore_question:
+            consequence, _active_pool = _lore_consequence(profile, variant)
+            consequence_place = current_location or profile["place"]
+        elif profile["kind"] == "romance":
+            consequence, consequence_place, _active_pool = _romance_consequence(context, action_lower, variant)
         elif location_consequences:
             # Location-specific pool wins: this prevents the bar/alley loop.
             consequence = location_consequences[variant % len(location_consequences)]
             consequence_place = current_location or profile["place"]
+            _active_pool = location_consequences
         else:
-            consequences = consequence_sets.get(profile["kind"], [
+            default_pool = [
                 f"a concealed detail near {profile['place']} points toward {profile['thread']}",
                 f"a witness appears with one fact about {profile['object']} they should not know",
                 f"the scene changes around {profile['object']}, exposing both danger and a useful clue",
-            ])
+            ]
+            # NOTE: use `or` rather than dict.get's default, since some kinds
+            # (e.g. "romance") map to an intentionally empty list in
+            # consequence_sets — dict.get's default only applies when the key
+            # is *missing*, not when its value is falsy, which previously
+            # left _active_pool empty and silently disabled the anti-repeat
+            # rotation guards below for those kinds.
+            consequences = consequence_sets.get(profile["kind"]) or default_pool
             consequence = consequences[variant % len(consequences)]
             consequence_place = profile["place"]
+            _active_pool = consequences
 
         # Flag guard: if this consequence re-describes something the player
         # already discovered, rotate to the next entry in whichever pool was used.
         already_discovered = context.get("already_discovered", "")
-        _active_pool = (
-            location_consequences if location_consequences
-            else consequence_sets.get(profile["kind"], [consequence])
-        )
         if _consequence_already_known(consequence, already_discovered):
             for _offset in range(1, len(_active_pool)):
                 _candidate = _active_pool[(variant + _offset) % len(_active_pool)]
@@ -851,9 +964,19 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
 
         # Build narration around the player's action and a concrete world change.
         # No fixed "discovery changes..." bridge is used anywhere.
-        close = _progression_close(clean_action, consequence, profile, variant)
+        close = _progression_close(clean_action, consequence, profile, variant, turn_offset)
 
-        if any(re.search(rf"\b{re.escape(word)}\b", action_lower) for word in (
+        if is_lore_question:
+            # Dedicated thematic-reveal template. Checked before the movement/
+            # dialogue/item templates below so a phrase like "take a risk to
+            # learn why..." is bound to the reveal, not the item template
+            # (which would otherwise match on the word "take").
+            narration = (
+                f"{repeated_note}You {clean_action}. "
+                f"{consequence[0].upper()}{consequence[1:]}. "
+                f"{close}"
+            )
+        elif any(re.search(rf"\b{re.escape(word)}\b", action_lower) for word in (
             "back", "return", "path", "go", "head", "walk", "follow", "leave"
         )):
             dest = consequence_place if consequence_place != profile["place"] else (
@@ -896,7 +1019,7 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
             )
         else:
             transition = _consequence_transition(
-                action_lower, consequence, profile["kind"]
+                action_lower, consequence, profile["kind"], turn_offset
             )
             narration = (
                 f"{repeated_note}You {clean_action}. {transition}. {close}"
@@ -911,7 +1034,17 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
             "bakery":     "moonlit bakery interior; warm bread on shelves; glowing oven",
         }
         _visual_context = _genre_visuals.get(profile["kind"], "atmospheric scene; moody lighting")
-        image_prompt = f"{consequence_place}; {_visual_context}; {consequence}"
+        # Carry the previous scene's key visual beat forward so two
+        # consecutive images share a continuous thread instead of reading as
+        # two unrelated establishing shots.
+        _previous_beat = " ".join((context.get("last_narration") or "").split()[:16])
+        if _previous_beat:
+            image_prompt = (
+                f"{consequence_place}; continuing directly from: {_previous_beat}; "
+                f"{_visual_context}; now showing: {consequence}"
+            )
+        else:
+            image_prompt = f"{consequence_place}; {_visual_context}; {consequence}"
         choices = _generate_dynamic_choices(full_prompt, narration)
         profile = _story_profile(context, narration)
         location_update = consequence_place
@@ -920,12 +1053,19 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
         if not active_characters_update and profile["kind"] == "lighthouse":
             active_characters_update = ["Mara Venn (boat captain)"]
 
+    _discovered_flags = {}
+    _consequence_for_flag = locals().get("consequence", "")
+    if _consequence_for_flag:
+        _slug_words = re.findall(r"[a-z0-9]+", _consequence_for_flag.lower())[:6]
+        if _slug_words:
+            _discovered_flags[f"discovered_{'_'.join(_slug_words)}"] = True
+
     return {
         "narration": narration,
         "stats_delta": {},
         "add_items": [],
         "remove_items": [],
-        "flags": {},
+        "flags": _discovered_flags,
         "relationships": {},
         "add_quests": [],
         "complete_quests": [],
