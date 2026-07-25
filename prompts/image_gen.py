@@ -5,10 +5,9 @@ Generates scene background illustrations for Lumen.
 
 Primary provider : Google Gemini (gemini-2.5-flash-image) using the
                    google-genai SDK and rotating GEMINI image keys from .env.
-Alternative provider: Hugging Face Inference Providers using Qwen/Qwen-Image.
 Fallback provider : Pollinations free image API (no key required) — used
-                    automatically when an image provider is unavailable,
-                    misconfigured, blocked, or over quota.
+                    directly when selected or automatically when Gemini is
+                    unavailable, misconfigured, blocked, or over quota.
 
 Images are cached by a hash of the final prompt, preventing the same scene
 from being generated and billed repeatedly.
@@ -34,19 +33,11 @@ except ImportError:  # Keep the app/test suite usable without the optional SDK.
     genai = None
     types = None
 
-try:
-    from huggingface_hub import InferenceClient
-except ImportError:  # Keep image generation optional when HF support is not installed.
-    InferenceClient = None
-
-
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
 IMAGE_MODEL_NAME = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
-IMAGE_PROVIDER = os.environ.get("IMAGE_PROVIDER", "gemini").strip().lower()
-HF_IMAGE_MODEL = os.environ.get("HF_IMAGE_MODEL", "Qwen/Qwen-Image")
-HF_IMAGE_PROVIDER = os.environ.get("HF_IMAGE_PROVIDER", "fal-ai").strip().lower()
+IMAGE_PROVIDER = os.environ.get("IMAGE_PROVIDER", "pollinations").strip().lower()
 POLLINATIONS_URL = os.environ.get(
     "POLLINATIONS_IMAGE_URL", "https://image.pollinations.ai/prompt"
 ).rstrip("/")
@@ -102,32 +93,6 @@ def _gemini_image_api_keys() -> list[str]:
         "GEMINI_API_KEYS",
         "GEMINI_API_KEY",
     )
-
-
-def _huggingface_api_keys() -> list[str]:
-    return _split_api_keys(
-        "HF_API_KEYS",
-        "HF_TOKENS",
-        "HF_TOKEN",
-        "HUGGINGFACEHUB_API_TOKEN",
-    )
-
-
-class _HuggingFacePaymentRequired(RuntimeError):
-    """Internal signal used to stop retrying a provider after HTTP 402."""
-
-
-def _is_http_402(exc: Exception) -> bool:
-    """Handle HF SDK and urllib-style HTTP errors without coupling to SDK types."""
-    for candidate in (
-        getattr(exc, "status_code", None),
-        getattr(getattr(exc, "response", None), "status_code", None),
-        getattr(exc, "code", None),
-    ):
-        if str(candidate) == "402":
-            return True
-    message = str(exc).lower()
-    return "402" in message or "payment required" in message
 
 
 # ---------------------------------------------------------------------------
@@ -289,47 +254,6 @@ def _generate_gemini_to_path(
 
 
 # ---------------------------------------------------------------------------
-# HUGGING FACE INFERENCE PROVIDERS
-# ---------------------------------------------------------------------------
-def _generate_huggingface_to_path(
-    prompt: str, path: str, aspect_ratio: str, api_key: str
-) -> str | None:
-    """Generate an image through Hugging Face Inference Providers."""
-    if InferenceClient is None:
-        raise RuntimeError(
-            "huggingface-hub is not installed; run pip install -r requirements.txt"
-        )
-
-    width, height = (1280, 720) if aspect_ratio == "16:9" else (1024, 768)
-    client_args = {"api_key": api_key}
-    if HF_IMAGE_PROVIDER and HF_IMAGE_PROVIDER != "auto":
-        client_args["provider"] = HF_IMAGE_PROVIDER
-
-    client = InferenceClient(**client_args)
-    try:
-        image = client.text_to_image(
-            prompt,
-            model=HF_IMAGE_MODEL,
-            width=width,
-            height=height,
-        )
-    except Exception as exc:
-        if _is_http_402(exc):
-            raise _HuggingFacePaymentRequired(
-                "Hugging Face image quota is exhausted (HTTP 402); using a local fallback image."
-            ) from exc
-        raise
-
-    if hasattr(image, "save"):
-        image.save(path)
-    else:
-        with open(path, "wb") as image_file:
-            image_file.write(bytes(image))
-
-    return path if os.path.exists(path) and os.path.getsize(path) > 0 else None
-
-
-# ---------------------------------------------------------------------------
 # POLLINATIONS PROVIDER (free, no key, automatic fallback)
 # ---------------------------------------------------------------------------
 POLLINATIONS_STYLE_SUFFIX = (
@@ -373,37 +297,6 @@ def _generate_to_path(prompt: str, path: str, aspect_ratio: str) -> str | None:
         w, h = (1280, 720) if aspect_ratio == "16:9" else (1024, 768)
         return _generate_pollinations_to_path(prompt, path, w, h)
 
-    if IMAGE_PROVIDER in {"huggingface", "hf"}:
-        hf_keys = _huggingface_api_keys()
-        for key_index, api_key in enumerate(hf_keys, start=1):
-            try:
-                result = _generate_huggingface_to_path(
-                    prompt, path, aspect_ratio, api_key
-                )
-                if result:
-                    print(
-                        f"[image_gen] image generated with Hugging Face key #{key_index} "
-                        f"(model={HF_IMAGE_MODEL})"
-                    )
-                    return result
-            except _HuggingFacePaymentRequired as exc:
-                print(f"[image_gen] {exc}")
-                return _get_fallback_image()
-            except Exception as exc:
-                print(
-                    f"[image_gen] Hugging Face key #{key_index} failed; "
-                    f"trying the next key/fallback: {exc}"
-                )
-        if not hf_keys:
-            print("[image_gen] No Hugging Face image keys configured; using Pollinations.")
-        width, height = (1280, 720) if aspect_ratio == "16:9" else (1024, 768)
-        return _generate_pollinations_to_path(
-            prompt,
-            _cache_path(prompt, aspect_ratio, suffix="poll"),
-            width,
-            height,
-        )
-
     # Gemini first, rotating through all configured image keys.
     image_keys = _gemini_image_api_keys()
     for key_index, api_key in enumerate(image_keys, start=1):
@@ -419,29 +312,6 @@ def _generate_to_path(prompt: str, path: str, aspect_ratio: str) -> str | None:
 
     if not image_keys:
         print("[image_gen] No Gemini image keys configured; using Pollinations fallback.")
-
-    # In auto mode, try Hugging Face before the keyless fallback.
-    if IMAGE_PROVIDER == "auto":
-        hf_keys = _huggingface_api_keys()
-        for key_index, api_key in enumerate(hf_keys, start=1):
-            try:
-                result = _generate_huggingface_to_path(
-                    prompt, path, aspect_ratio, api_key
-                )
-                if result:
-                    print(
-                        f"[image_gen] image generated with Hugging Face key #{key_index} "
-                        f"(model={HF_IMAGE_MODEL})"
-                    )
-                    return result
-            except _HuggingFacePaymentRequired as exc:
-                print(f"[image_gen] {exc}")
-                return _get_fallback_image()
-            except Exception as exc:
-                print(
-                    f"[image_gen] Hugging Face key #{key_index} failed; "
-                    f"trying the next fallback: {exc}"
-                )
 
     # Pollinations fallback (separate cache slot so it does not collide).
     fallback_path = _cache_path(prompt, aspect_ratio, suffix="poll")

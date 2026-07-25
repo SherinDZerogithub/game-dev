@@ -40,18 +40,17 @@ class BackendSafetyRegressionTests(unittest.TestCase):
 
         self.assertEqual(cleaned, "A silver thread catches the moonlight.")
 
-    def test_huggingface_402_returns_local_fallback(self):
-        with patch.object(image_gen, "_huggingface_api_keys", return_value=["hf-key"]), \
+    def test_pollinations_provider_remains_available(self):
+        with patch.object(image_gen, "IMAGE_PROVIDER", "pollinations"), \
              patch.object(
                  image_gen,
-                 "_generate_huggingface_to_path",
-                 side_effect=image_gen._HuggingFacePaymentRequired("HTTP 402"),
-             ), \
-             patch.object(image_gen, "_get_fallback_image", return_value="fallback.png"):
+                 "_generate_pollinations_to_path",
+                 return_value="pollinations.png",
+             ) as generate:
             result = image_gen._generate_to_path("scene", "target.png", "16:9")
 
-        self.assertEqual(result, "fallback.png")
-
+        self.assertEqual(result, "pollinations.png")
+        generate.assert_called_once_with("scene", "target.png", 1280, 720)
 
 class ChaosLeakRegressionTests(unittest.TestCase):
     """Regression coverage for the bug where the raw [TWIST EVENT] directive

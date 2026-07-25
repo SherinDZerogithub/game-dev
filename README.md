@@ -36,8 +36,8 @@ themes. Designed for showcasing in a portfolio and on LinkedIn.
 - **Backend:** FastAPI + Pydantic v2
 - **AI:** Groq chat API for narration, with optional Google Gemini support
   - narration: `llama-3.1-8b-instant`
-  - scene images: Hugging Face `Qwen/Qwen-Image` or Gemini
-- **Image fallback:** Pollinations free image API (no key)
+  - scene images: Pollinations by default, or optional Gemini
+- **Image generation:** Pollinations free image API (no key), with optional Gemini
 - **Persistence:** SQLite
 - **Frontend:** single-file HTML + CSS + vanilla JS (glassmorphism, inline SVG icons)
 
@@ -60,22 +60,15 @@ GROQ_API_KEYS=your-groq-key-1,your-groq-key-2
 GROQ_BASE_URL=https://api.groq.com/openai/v1
 GROQ_MODEL=llama-3.1-8b-instant
 
-# Use Hugging Face for images, with Pollinations as the final fallback.
-IMAGE_PROVIDER=huggingface
-HF_API_KEYS=hf_token_one,hf_token_two
-HF_IMAGE_MODEL=Qwen/Qwen-Image
-HF_IMAGE_PROVIDER=fal-ai
+# Use Pollinations for images; it requires no API key.
+IMAGE_PROVIDER=pollinations
 ```
 
 `LLM_PROVIDER=auto` tries every Groq key, then every Gemini key. Set
-`LLM_PROVIDER=gemini` to use Gemini only. To avoid Gemini for images too, set
-`IMAGE_PROVIDER=huggingface` or `IMAGE_PROVIDER=pollinations`.
-
-Hugging Face requires a user token with **Inference Providers** permission.
-`Qwen/Qwen-Image` is the default image model; use `HF_IMAGE_MODEL` to switch
-models and `HF_IMAGE_PROVIDER` to select a hosted provider. Hugging Face’s
-current text-to-image docs also list FLUX.1-Krea-dev and ByteDance/Hyper-SD
-as alternatives.
+`LLM_PROVIDER=gemini` to use Gemini only. For images, set
+`IMAGE_PROVIDER=gemini` to use Gemini, `IMAGE_PROVIDER=pollinations` to use
+the keyless Pollinations generator, or `IMAGE_PROVIDER=auto` to try Gemini
+before Pollinations.
 
 The single-key variables `GROQ_API_KEY` and `GEMINI_API_KEY` also work.
 Never commit `prompts/.env` or paste real keys into source code.
