@@ -209,8 +209,11 @@ class NarrativeContextTests(unittest.TestCase):
         result = llm_client._fallback_turn(prompt)
 
         self.assertIn("confession", result["narration"].lower())
-        self.assertIn("sealed Vienna letter", result["image_prompt"])
+        # Image prompt must reference the actual location and the letter,
+        # but NOT Vienna-station imagery since the player is at the bookshop.
+        self.assertIn("sealed letter", result["image_prompt"].lower())
         self.assertIn("bookshop doorway", result["image_prompt"].lower())
+        self.assertNotIn("station", result["image_prompt"].lower())
 
     def test_romance_reaches_station_only_when_action_moves_there(self):
         state = game_engine.deepcopy(game_engine.DEFAULT_STATE)

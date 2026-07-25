@@ -1,4 +1,4 @@
-"""
+﻿"""
 game_engine.py
 
 The orchestrator. This is "the game" — it wires together:
@@ -33,7 +33,12 @@ with open(
 # -----------------------------
 SUMMARIZE_EVERY_N_TURNS = 6
 CHAOS_MODE_SUMMARIZE_EVERY_N_TURNS = 10
-RECENT_TURNS_LIMIT = 8
+# How many raw history entries to pass to the LLM each turn.
+# Older turns are replaced by the rolling summary, keeping token cost flat.
+RECENT_TURNS_LIMIT = 6
+# How many raw history entries to KEEP after a summary is written.
+# Higher than 2 so the model still sees the last few beats of the scene.
+HISTORY_KEEP_AFTER_SUMMARY = 4
 MIN_STAT_VALUE = 0
 MAX_STAT_VALUE = 200
 REPETITION_LOOKBACK = 6
@@ -42,6 +47,7 @@ MAX_REPAIR_ATTEMPTS = 2
 FORBIDDEN_TEMPLATE_FRAGMENTS = (
     "the discovery changes what the next step can be",
     "it points toward",
+    "a secondary terminal boots itself and begins displaying coordinates",
 )
 
 # -----------------------------
@@ -145,6 +151,9 @@ DEFAULT_STATE = {
         "current_goal": "",
         "open_threads": [],
     },
+    # Ring-buffer of recent fallback consequences to prevent the same sentence
+    # from being reused across turns when the LLM is over quota.
+    "last_consequences": [],
 }
 
 # -----------------------------
@@ -170,6 +179,10 @@ def _ensure_state_shape(state: dict) -> None:
     else:
         for key, value in DEFAULT_STATE["narrative_context"].items():
             state["narrative_context"].setdefault(key, deepcopy(value))
+
+    # Ensure ring-buffer for fallback consequence deduplication
+    if not isinstance(state.get("last_consequences"), list):
+        state["last_consequences"] = []
 
 
 def _format_bullets(values: list) -> str:
@@ -203,7 +216,7 @@ def _assemble_prompt(
 
     narrative_context = state.get("narrative_context", {})
     recent_actions = state.get("action_history", [])[-6:]
-    recent_narrations = state.get("narration_history", [])[-8:] # Up from -4
+    recent_narrations = state.get("narration_history", [])[-8:]
     active_characters = narrative_context.get("active_characters", [])
     open_threads = narrative_context.get("open_threads", [])
 
@@ -220,11 +233,8 @@ def _assemble_prompt(
     if state.get("difficulty"):
         difficulty_line = f"\nDifficulty pacing: {state['difficulty']}\n"
 
-    # Add location context more prominently.
     location_text = narrative_context.get("location", "") or "Unknown"
 
-    # Dynamic anti-looping reinforcement. This must be interpolated into the
-    # returned prompt; the previous version built it but never included it.
     banned_phrases_instruction = ""
     if recent_narrations:
         banned_phrases_instruction = (
@@ -237,13 +247,10 @@ def _assemble_prompt(
             "the scene, character situation, available information, or danger.\n"
         )
 
-    # Build a human-readable summary of already-discovered facts so the LLM
-    # never re-narrates finding something the player already found.
     flags = state.get("flags", {})
     discovered_flags_lines = []
     for flag_key, flag_val in flags.items():
         if flag_val is True or flag_val == "discovered" or flag_val == "found":
-            # Convert snake_case to readable label
             label = flag_key.replace("_", " ")
             discovered_flags_lines.append(label)
     discovered_flags_text = (
@@ -251,6 +258,34 @@ def _assemble_prompt(
         if discovered_flags_lines
         else "  - None"
     )
+
+    # ------------------------------------------------------------------
+    # FSM SNAPSHOT — Strict structured state block the LLM must respect.
+    # Injected as a labelled section so the model cannot miss it.
+    # ------------------------------------------------------------------
+    fsm_block = f"""[FINITE STATE MACHINE — STRICT LOCATION & GOAL LOCK]
+CURRENT LOCATION: {location_text}
+  You MUST place the player in this exact location. Do not invent a new
+  room, street, station, or building unless the action explicitly moves
+  them elsewhere.
+
+CURRENT GOAL: {narrative_context.get("current_goal", "") or "None"}
+  This is the active narrative thread. Advance or complicate it — never
+  reset to a generic scene.
+
+ACTIVE CHARACTERS PRESENT:
+{_format_bullets(active_characters)}
+  These characters exist in the current scene. Do not introduce unnamed
+  strangers unless plausible AND you add them to active_characters.
+
+OPEN STORY THREADS:
+{_format_bullets(open_threads)}
+  Preserve or explicitly resolve one of these. Do not silently drop them.
+
+ALREADY DISCOVERED (FLAG GUARD):
+{discovered_flags_text}
+  The player already knows these facts. NEVER narrate discovering them
+  again. Build forward from what is already known."""
 
     return f"""
 {SYSTEM_PROMPT}
@@ -261,15 +296,7 @@ def _assemble_prompt(
 [STORY SUMMARY]
 {state.get("story_summary", "") or "No summary yet."}
 
-[LOCATION]
-{location_text}
-
-[NARRATIVE CONTEXT]
-Active characters:
-{_format_bullets(active_characters)}
-Current goal: {narrative_context.get("current_goal", "") or "None"}
-Open story threads:
-{_format_bullets(open_threads)}
+{fsm_block}
 
 Continuity instruction: Treat the player input as an open-ended action, not as a menu command.
 Connect it to the established story, show a concrete consequence, and preserve important
@@ -292,11 +319,6 @@ Resolve: {state["stats"].get("resolve", 100)}
 [FLAGS]
 {state.get("flags", {})}
 
-[ALREADY DISCOVERED — DO NOT RE-NARRATE THESE]
-{discovered_flags_text}
-If any item above is listed, the player already knows it. Do not describe finding
-or revealing it again. Instead, treat it as established background and build forward.
-
 [RELATIONSHIPS]
 {relationships_text}
 
@@ -312,7 +334,7 @@ or revealing it again. Instead, treat it as established background and build for
 [RECENT PLAYER ACTIONS]
 {_format_bullets(recent_actions)}
 
-[RECENT NARRATIONS \u2014 DO NOT REPEAT OR PARAPHRASE THESE]
+[RECENT NARRATIONS — DO NOT REPEAT OR PARAPHRASE THESE]
 {_format_bullets(recent_narrations)}
 {banned_phrases_instruction}
 [RECENT TURNS]
@@ -323,7 +345,6 @@ or revealing it again. Instead, treat it as established background and build for
 [PLAYER INPUT]
 {player_input}
 """.strip()
-
 
 def _apply_mapping_updates(target: dict, updates: dict | None) -> None:
     if isinstance(updates, dict):
@@ -584,7 +605,16 @@ def _remove_forbidden_template_sentences(result: dict) -> dict:
 
 def _generate_non_repeating_turn(full_prompt: str, state: dict) -> dict:
     """Generate a turn and repair it when it repeats a recent structural pattern."""
-    result = llm_client.generate_turn(full_prompt, temperature=0.85)
+    last_consequences = state.get("last_consequences", [])
+    result = llm_client.generate_turn(
+        full_prompt, temperature=0.85, last_consequences=last_consequences
+    )
+    # Track fallback consequence to prevent repetition on next turn.
+    _fb_consequence = result.pop("_fallback_consequence", "")
+    if _fb_consequence:
+        state.setdefault("last_consequences", []).append(_fb_consequence)
+        state["last_consequences"] = state["last_consequences"][-6:]
+
     if not _result_repeats_recent_story(result, state):
         return result
 
@@ -605,7 +635,9 @@ def _generate_non_repeating_turn(full_prompt: str, state: dict) -> dict:
         result = llm_client.generate_turn(
             repair_prompt,
             temperature=min(1.25, 1.0 + attempt * 0.1),
+            last_consequences=last_consequences,
         )
+        result.pop("_fallback_consequence", "")
         if not _result_repeats_recent_story(result, state):
             return result
 
@@ -736,7 +768,10 @@ def take_turn(session_id: str, player_input: str) -> dict:
             for entry in history
         )
         state["story_summary"] = llm_client.summarize(history_text)
-        history = history[-2:]
+        # Keep the last few turns so the model still sees recent context,
+        # while the summary covers everything older. Trimming to only 2
+        # entries caused the LLM to lose scene continuity.
+        history = history[-HISTORY_KEEP_AFTER_SUMMARY:]
 
     db.save_game(session_id, state, history)
 

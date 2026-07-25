@@ -86,13 +86,13 @@ def _extract_json(raw_text: str) -> dict:
         raise ValueError(f"Could not parse JSON from model output:\n{raw_text}")
 
 
-def generate_turn(full_prompt: str, temperature: float = 0.9) -> dict:
+def generate_turn(full_prompt: str, temperature: float = 0.9, last_consequences: list | None = None) -> dict:
     """Send the assembled prompt to Gemini and return the parsed structured dict."""
     try:
         client = _get_client()
     except RuntimeError as exc:
         print(f"[llm_client] Gemini unavailable, using fallback turn: {exc}")
-        return _fallback_turn(full_prompt)
+        return _fallback_turn(full_prompt, last_consequences)
 
     try:
         response = client.models.generate_content(
@@ -113,7 +113,7 @@ def generate_turn(full_prompt: str, temperature: float = 0.9) -> dict:
         if not isinstance(result, dict):
             raise ValueError("Model response must be a JSON object")
         if not str(result.get("narration", "")).strip():
-            fallback = _fallback_turn(full_prompt)
+            fallback = _fallback_turn(full_prompt, last_consequences)
             result["narration"] = fallback["narration"]
             if not result.get("image_prompt"):
                 result["image_prompt"] = fallback["image_prompt"]
@@ -129,7 +129,7 @@ def generate_turn(full_prompt: str, temperature: float = 0.9) -> dict:
         reason = "quota/provider error" if _is_quota_error(exc) else "Gemini request failed"
         print(f"[llm_client] {reason}, using fallback turn: {exc}")
         traceback.print_exc()
-        return _fallback_turn(full_prompt)
+        return _fallback_turn(full_prompt, last_consequences)
 
 
 def _section(full_prompt: str, name: str) -> str:
@@ -138,12 +138,29 @@ def _section(full_prompt: str, name: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _fsm_field(full_prompt: str, field: str) -> str:
+    """Extract a labelled field from the FSM SNAPSHOT block, e.g. CURRENT LOCATION."""
+    pattern = rf"^{re.escape(field)}:\s*(.+?)(?=\n[A-Z]|\Z)"
+    match = re.search(pattern, full_prompt, re.MULTILINE | re.DOTALL)
+    if match:
+        # Return only the first line (the value), not the explanatory bullet beneath it
+        value = match.group(1).strip()
+        return value.splitlines()[0].strip()
+    return ""
+
+
 def _extract_context_from_prompt(full_prompt: str) -> dict:
     """Extract the engine's labelled prompt sections for API fallbacks."""
     recent_turns = _section(full_prompt, "RECENT TURNS")
     recent_narrations = _section(
         full_prompt, "RECENT NARRATIONS \u2014 DO NOT REPEAT OR PARAPHRASE THESE"
     )
+    # The prompt now uses "RECENT NARRATIONS — DO NOT REPEAT" (en-dash variant too)
+    if not recent_narrations:
+        recent_narrations = _section(
+            full_prompt, "RECENT NARRATIONS — DO NOT REPEAT OR PARAPHRASE THESE"
+        )
+
     narrator_events = []
     for line in recent_turns.splitlines():
         if line.lower().startswith("narrator:"):
@@ -157,6 +174,19 @@ def _extract_context_from_prompt(full_prompt: str) -> dict:
             if value.lower() != "none":
                 action_lines.append(value)
 
+    # Location is now in the FSM block under "CURRENT LOCATION:" rather than
+    # a standalone [LOCATION] section.
+    location = (
+        _section(full_prompt, "LOCATION")
+        or _fsm_field(full_prompt, "CURRENT LOCATION")
+    )
+
+    # Already-discovered facts live inside the FSM block now.
+    already_discovered = (
+        _section(full_prompt, "ALREADY DISCOVERED \u2014 DO NOT RE-NARRATE THESE")
+        or _section(full_prompt, "ALREADY DISCOVERED (FLAG GUARD)")
+    )
+
     return {
         "world_prompt": _section(full_prompt, "WORLD PREMISE / PLAYER-GIVEN PROMPT"),
         "story_summary": _section(full_prompt, "STORY SUMMARY"),
@@ -166,9 +196,10 @@ def _extract_context_from_prompt(full_prompt: str) -> dict:
         "last_narration": narrator_events[-1] if narrator_events else "",
         "inventory": _section(full_prompt, "INVENTORY"),
         "flags": _section(full_prompt, "FLAGS"),
-        "location": _section(full_prompt, "LOCATION"),
-        "active_characters": _section(full_prompt, "ACTIVE CHARACTERS"),
+        "location": location,
+        "active_characters": _section(full_prompt, "ACTIVE CHARACTERS PRESENT"),
         "last_choices": _section(full_prompt, "LAST SUGGESTIONS"),
+        "already_discovered": already_discovered,
     }
 
 
@@ -339,6 +370,7 @@ def _generate_dynamic_choices(full_prompt: str, narration: str) -> list:
     
     profile = _story_profile(context, narration)
     current_choices = context.get("last_choices", "")
+    already_discovered = context.get("already_discovered", "")
     story_text = " ".join(str(context.get(key, "")) for key in (
         "world_prompt", "story_summary", "recent_turns", "recent_narrations", "last_narration"
     )).lower()
@@ -512,7 +544,8 @@ def _generate_dynamic_choices(full_prompt: str, narration: str) -> list:
         # Normalize for comparison
         norm = " ".join(re.findall(r"[a-z0-9]+", choice.lower()))
         if (norm and norm not in seen and norm not in current_choices
-                and not _choice_repeats_action(choice, action_lower)):
+                and not _choice_repeats_action(choice, action_lower)
+                and not _consequence_already_known(choice, already_discovered)):
             seen.add(norm)
             unique_choices.append(choice)
     
@@ -612,7 +645,24 @@ def _generate_dynamic_choices(full_prompt: str, narration: str) -> list:
     return unique_choices[:3]
 
 
-def _fallback_turn(full_prompt: str) -> dict:
+def _consequence_already_known(consequence: str, already_discovered: str) -> bool:
+    """Return True if the consequence describes something already flagged as found."""
+    if not already_discovered or already_discovered.strip().lower() in ("", "none", "- none"):
+        return False
+    # Tokenise both strings and check for 4+ shared word overlap.
+    import re as _re
+    c_words = set(_re.findall(r"[a-z0-9]+", consequence.lower()))
+    for line in already_discovered.splitlines():
+        line = line.strip().lstrip("-").strip()
+        if not line or line.lower() == "none":
+            continue
+        d_words = set(_re.findall(r"[a-z0-9]+", line.lower()))
+        if len(c_words & d_words) >= 4:
+            return True
+    return False
+
+
+def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> dict:
     """Generic, prompt-aware fallback used when Gemini is unavailable or over quota."""
     context = _extract_context_from_prompt(full_prompt)
     raw_action = _extract_player_action(full_prompt)
@@ -675,11 +725,64 @@ def _fallback_turn(full_prompt: str) -> dict:
             if previous_count else ""
         )
 
+        # Location-specific pools are checked FIRST so that moving to a bar,
+        # alley, or other new room never loops back to a street/case-file clue.
+        current_location = context.get("location", "").lower()
+        location_consequence_map: dict[str, list[str]] = {
+            "bar": [
+                "the bartender slides a folded note down the counter without meeting your eyes",
+                "a patron in the corner booth recognises your face and ducks behind a newspaper",
+                "the jukebox skips and lands on a song the victim used to request every Friday",
+            ],
+            "alley": [
+                "a fire-escape ladder has been freshly forced, its rust scraped bright silver",
+                "a witness crouches behind the dumpster, clutching a matchbook from the crime scene",
+                "footprints in the puddles lead toward a bricked-up door that is slightly ajar",
+            ],
+            "diner": [
+                "a server quietly passes you a napkin with a name and a room number on it",
+                "the cook shuts the kitchen window the moment you enter, locking eyes with you first",
+                "someone has circled tonight's date in the newspaper left on your stool",
+            ],
+            "office": [
+                "a desk drawer has been searched recently — the pens are all pointing the same way",
+                "the phone log shows a call placed to a number that was disconnected two years ago",
+                "a framed photo on the shelf has been turned face-down and recently picked back up",
+            ],
+            "rooftop": [
+                "a rope tied to the parapet is still damp — someone used it to descend tonight",
+                "a second set of fresh boot-prints crosses the gravel and stops at the edge",
+                "a spent shell casing rocks in the wind, balanced on the ledge",
+            ],
+            "hotel": [
+                "the room-service tray outside the next door holds two untouched glasses",
+                "a key card slides under your door — no number, no name, only a floor: three",
+                "the hallway mirror reflects a figure at the far end who is not there when you turn",
+            ],
+            "lantern": [
+                "the old logbook falls open to an entry the keeper never finished",
+                "the lenses magnify a distant ship that was never on the charts",
+                "frost forms on the glass in the shape of a human hand pressed from inside",
+            ],
+            "relay": [
+                "a secondary terminal boots itself and begins displaying coordinates",
+                "the backup beacon fires once, then goes silent before the timestamp registers",
+                "a handwritten note taped inside the panel reads: do not answer the second signal",
+            ],
+        }
+
+        # Match current location to a specific pool.
+        location_consequences: list[str] | None = None
+        for loc_key, loc_pool in location_consequence_map.items():
+            if loc_key in current_location:
+                location_consequences = loc_pool
+                break
+
         consequence_sets = {
             "noir": [
-                "the case file reveals a second victim whose name was blacked out",
                 "a witness steps from a doorway and says the caller is watching this street",
                 "a passing headlight exposes a blood-marked clue beneath the rain",
+                "the phone in your pocket buzzes — a second message from the blocked number",
             ],
             "romance": [],  # selected from the current location below
             "lighthouse": [
@@ -705,6 +808,10 @@ def _fallback_turn(full_prompt: str) -> dict:
         }
         if profile["kind"] == "romance":
             consequence, consequence_place = _romance_consequence(context, action_lower, variant)
+        elif location_consequences:
+            # Location-specific pool wins: this prevents the bar/alley loop.
+            consequence = location_consequences[variant % len(location_consequences)]
+            consequence_place = current_location or profile["place"]
         else:
             consequences = consequence_sets.get(profile["kind"], [
                 f"a concealed detail near {profile['place']} points toward {profile['thread']}",
@@ -713,6 +820,33 @@ def _fallback_turn(full_prompt: str) -> dict:
             ])
             consequence = consequences[variant % len(consequences)]
             consequence_place = profile["place"]
+
+        # Flag guard: if this consequence re-describes something the player
+        # already discovered, rotate to the next entry in whichever pool was used.
+        already_discovered = context.get("already_discovered", "")
+        _active_pool = (
+            location_consequences if location_consequences
+            else consequence_sets.get(profile["kind"], [consequence])
+        )
+        if _consequence_already_known(consequence, already_discovered):
+            for _offset in range(1, len(_active_pool)):
+                _candidate = _active_pool[(variant + _offset) % len(_active_pool)]
+                if not _consequence_already_known(_candidate, already_discovered):
+                    consequence = _candidate
+                    break
+
+        # Ring-buffer guard: rotate past any consequence already used in recent
+        # fallback turns so we never repeat the same sentence back-to-back.
+        _used = set(last_consequences or [])
+        if consequence in _used and len(_active_pool) > 1:
+            for _offset in range(1, len(_active_pool)):
+                _candidate = _active_pool[(variant + _offset) % len(_active_pool)]
+                if _candidate not in _used and not _consequence_already_known(
+                    _candidate, already_discovered
+                ):
+                    consequence = _candidate
+                    break
+
         clean_action = action.rstrip(".!?")
 
         # Build narration around the player's action and a concrete world change.
@@ -722,14 +856,13 @@ def _fallback_turn(full_prompt: str) -> dict:
         if any(re.search(rf"\b{re.escape(word)}\b", action_lower) for word in (
             "back", "return", "path", "go", "head", "walk", "follow", "leave"
         )):
-            departure_place = (
-                "the route behind you"
-                if consequence_place != profile["place"]
-                else profile["place"]
+            dest = consequence_place if consequence_place != profile["place"] else (
+                current_location or profile["place"]
             )
             narration = (
-                f"{repeated_note}You {clean_action}, and {departure_place} grows quiet "
-                f"as though the world has sealed it behind you. Ahead, {consequence}. "
+                f"{repeated_note}You {clean_action}. "
+                f"The place you left recedes; {dest} fills the frame instead. "
+                f"Here, {consequence}. "
                 f"{close}"
             )
         elif any(re.search(rf"\b{re.escape(word)}\b", action_lower) for word in (
@@ -769,10 +902,16 @@ def _fallback_turn(full_prompt: str) -> dict:
                 f"{repeated_note}You {clean_action}. {transition}. {close}"
             )
 
-        image_prompt = (
-            f"{consequence_place}; sealed Vienna letter with visible marginal symbols; "
-            f"dim coastal midnight light; {consequence}"
-        )
+        _genre_visuals = {
+            "noir":       "rain-soaked neon street at night; wet pavement reflections; shadows",
+            "romance":    "dim coastal midnight light; sealed letter; fog and lamplight",
+            "lighthouse": "isolated lighthouse at night; crashing dark waves; rotating beam",
+            "scifi":      "deep-space relay station interior; blinking terminals; star field",
+            "fantasy":    "enchanted forest road; blue fireflies; ancient glowing stone",
+            "bakery":     "moonlit bakery interior; warm bread on shelves; glowing oven",
+        }
+        _visual_context = _genre_visuals.get(profile["kind"], "atmospheric scene; moody lighting")
+        image_prompt = f"{consequence_place}; {_visual_context}; {consequence}"
         choices = _generate_dynamic_choices(full_prompt, narration)
         profile = _story_profile(context, narration)
         location_update = consequence_place
@@ -800,6 +939,9 @@ def _fallback_turn(full_prompt: str) -> dict:
         "choices_hint": choices[:3],
         "image_prompt": _clean_image_prompt(image_prompt),
         "game_over": False,
+        # Carries the consequence sentence back to game_engine so it can be
+        # stored in state["last_consequences"] and prevent repetition.
+        "_fallback_consequence": locals().get("consequence", ""),
     }
 
 
