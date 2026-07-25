@@ -62,13 +62,14 @@ FORBIDDEN_TEMPLATE_FRAGMENTS = (
 LORE_PRESETS = [
     {
         "id": "noir",
-        "label": "Neon Noir",
+        "label": "The Language Exchange",
         "icon": "city",
         "opening": (
-            "Rain streaks the neon of a city that never sleeps. You are a private "
-            "investigator standing over an unsolved case file at 2 a.m. when the "
-            "phone rings with a voice from a past you tried to bury. Find out who "
-            "is calling — and why now."
+            "On your first week at university, you volunteer at a language-exchange "
+            "café where students from around the world practise together. A notebook "
+            "filled with phrases in several languages is left behind with a meeting "
+            "time no one recognises. Listen carefully, ask when you do not understand, "
+            "and find the student who needs your help before the café closes."
         ),
     },
     {
@@ -83,12 +84,14 @@ LORE_PRESETS = [
     },
     {
         "id": "mystery",
-        "label": "The Lighthouse Keeper",
-        "icon": "lighthouse",
+        "label": "The Flexible Semester",
+        "icon": "compass",
         "opening": (
-            "You arrive to take up the post of lighthouse keeper on a remote island. "
-            "The previous keeper left no note — only a locked journal and a warning "
-            "scratched into the door: do not light the beam after midnight."
+            "Your first semester has barely begun when a timetable mix-up sends you "
+            "to a student project team you never planned to join. Their deadline "
+            "moves, a teammate drops out, and the brief changes again. Keep an open "
+            "mind, listen to the group, and find a way forward when the plan will not "
+            "stay still."
         ),
     },
     {
@@ -115,12 +118,14 @@ LORE_PRESETS = [
     },
     {
         "id": "slice",
-        "label": "The Midnight Bakery",
+        "label": "The Midnight Study Café",
         "icon": "moon",
         "opening": (
-            "You inherit a tiny bakery that only opens between midnight and dawn. On "
-            "your first night, a regular customer arrives who has been coming for "
-            "thirty years — and who is not, exactly, alive. Hear their story."
+            "At a quiet campus study café that opens after dark, you agree to help a "
+            "small group prepare for their first major presentation. Everyone brings "
+            "a different strength, one important source is missing, and the clock is "
+            "moving fast. Share the work, protect your energy, and help the team find "
+            "its own way to a confident finish."
         ),
     },
 ]

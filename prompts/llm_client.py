@@ -452,6 +452,11 @@ def _is_lore_question(action_lower: str) -> bool:
 
 
 LORE_REVEAL_SETS: dict[str, list[str]] = {
+    "language": [
+        "the notebook belongs to a student who has been translating for everyone else while quietly falling behind",
+        "the meeting is a peer-support circle, but its location was written in several languages so nobody would feel left out",
+        "the phrases are not a code at all; they are careful requests for help that were misunderstood by the wrong person",
+    ],
     "noir": [
         "the caller waited because they were the one who filed the case away ten years ago, and only now found the nerve to reopen it",
         "the silence was never guilt — naming the caller sooner would have gotten you both killed",
@@ -476,6 +481,16 @@ LORE_REVEAL_SETS: dict[str, list[str]] = {
         "the map exists because your grandmother walked that road once and chose to erase it from every other chart in the kingdom",
         "the stone hums because it remembers a promise your grandmother made to whatever waits at the road's end",
         "the road was hidden because the last person who found it was never seen leaving — only arriving, again and again",
+    ],
+    "adaptability": [
+        "the teammate left because the original plan made their part impossible, and the new brief finally gives them a way back in",
+        "the deadline moved to protect another group, forcing everyone to decide what matters most instead of trying to do everything",
+        "the changing brief was not a setback; it was feedback from the person the project is meant to help",
+    ],
+    "study": [
+        "the missing source was in a classmate's notes all along, but they were waiting for someone to ask instead of struggling alone",
+        "the presentation matters less than the group learning how to share responsibility without exhausting one person",
+        "the strongest member of the group has been hiding how overwhelmed they are, and a smaller plan could give everyone room to succeed",
     ],
     "bakery": [
         "the midnight customer keeps returning because the last thing said between you was never finished, thirty years ago",
@@ -568,6 +583,14 @@ def _requested_location(action_lower: str) -> str:
     story's established lead rather than inventing a room.
     """
     destinations = (
+        ("language exchange", "the language-exchange cafe"),
+        ("language café", "the language-exchange cafe"),
+        ("language cafe", "the language-exchange cafe"),
+        ("project room", "the student project room"),
+        ("campus", "the campus project room"),
+        ("study room", "the campus study cafe"),
+        ("study café", "the campus study cafe"),
+        ("study cafe", "the campus study cafe"),
         ("back room", "the bakery back room"),
         ("kitchen", "the bakery kitchen"),
         ("bookshop", "the bookshop doorway"),
@@ -630,6 +653,12 @@ def _story_profile(context: dict, narration: str = "") -> dict:
     ) + " " + str(narration or "")
     lower = text.lower()
     profiles = [
+        ("language", ("language-exchange", "languages", "phrases", "notebook", "university"),
+         "the multilingual notebook", "the language-exchange cafe", "who left the notebook and why they need help"),
+        ("adaptability", ("semester", "timetable", "project team", "deadline", "teammate", "brief"),
+         "the changing project brief", "the student project room", "how the team can adapt together"),
+        ("study", ("study cafe", "study café", "presentation", "source", "protect your energy"),
+         "the missing source", "the campus study cafe", "how the group can finish without burning out"),
         ("noir", ("detective", "investigator", "neon", "case file", "crime", "rain"),
          "the case file", "the rain-slick street", "the caller's identity"),
         ("romance", ("letter", "vienna", "bookshop", "train", "coastal town"),
@@ -672,7 +701,14 @@ def _dialogue_subject(context: dict, profile: dict) -> str | None:
     if active_characters:
         return active_characters[0]
 
-    # The curated lighthouse opening establishes this role even when the
+    if profile.get("kind") == "language":
+        return "the student who left the multilingual notebook"
+    if profile.get("kind") == "adaptability":
+        return "your project teammate"
+    if profile.get("kind") == "study":
+        return "a member of the study group"
+
+    # The legacy lighthouse opening establishes this role even when the
     # fallback is called before the first narrative-context update is saved.
     if profile.get("kind") == "lighthouse":
         return "Mara Venn, the boat captain who brought you ashore"
@@ -710,7 +746,31 @@ def _generate_dynamic_choices(
 
     # Location-based choices
     location = context.get("location", "").lower()
-    if "city" in location or "street" in location or "alley" in location:
+    if "language" in location or "exchange" in location:
+        choices_pool.extend([
+            "compare the phrases in the multilingual notebook",
+            "ask the students which language they prefer",
+            "practise the unfamiliar phrase before using it",
+            "find the person connected to the meeting time",
+            "ask the café coordinator for context",
+        ])
+    elif "project" in location or "semester" in location or "campus" in location:
+        choices_pool.extend([
+            "ask the team what changed in the brief",
+            "help divide the new tasks fairly",
+            "listen to the teammate who wants to leave",
+            "turn the new deadline into a smaller plan",
+            "test the team's idea with another student",
+        ])
+    elif "study" in location or "presentation" in location:
+        choices_pool.extend([
+            "ask classmates for the missing source",
+            "help the group choose its most important point",
+            "redistribute the work before someone burns out",
+            "rehearse the presentation with the group",
+            "take a short break and return with a clearer plan",
+        ])
+    elif "city" in location or "street" in location or "alley" in location:
         choices_pool.extend([
             "search the nearby alleys for a hidden entrance",
             "ask a passerby about the sealed letter",
@@ -1142,6 +1202,13 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
                 break
 
         consequence_sets = {
+            "language": [
+                "a student switches languages mid-sentence, revealing they are asking for help without drawing attention",
+                "a phrase in the notebook has a second meaning that changes who the meeting is for",
+                "the student you need recognises the phrase you say and finally explains what has gone wrong",
+                "two versions of the same sentence point to a misunderstanding, not a betrayal",
+                "the café coordinator asks you to mediate a conversation no one else can untangle",
+            ],
             "noir": [
                 "a witness steps from a doorway and says the caller is watching this street",
                 "a passing headlight exposes a blood-marked clue beneath the rain",
@@ -1168,6 +1235,20 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
                 "a royal seal appears in the soil, buried beside footprints made by no human",
                 "the map's ink bleeds sideways, sketching a second road no one has walked",
                 "the stone key grows warm enough to hurt, pulling gently toward the forest's heart",
+            ],
+            "adaptability": [
+                "the project brief changes again, but the new version reveals what the people you are helping actually need",
+                "your teammate admits they are lost, and the plan improves when you redistribute the roles",
+                "the deadline moves forward; a smaller, clearer deliverable becomes possible if you release the original idea",
+                "two conflicting schedules reveal a free hour the team can use to rebuild its plan",
+                "an unexpected campus event gives the group a better way to test its idea",
+            ],
+            "study": [
+                "the missing source turns up in another student's notes, but only after you ask for help",
+                "one group member is overwhelmed; reassigning tasks gives everyone room to contribute",
+                "the projector fails, forcing the group to explain its idea clearly without relying on slides",
+                "a classmate offers a useful counterargument that makes the presentation stronger",
+                "the clock exposes one unnecessary section, leaving the group time to practise the part that matters",
             ],
             "bakery": [
                 "the oven rings though nothing is baking, and a warm loaf bears your name",
@@ -1329,11 +1410,14 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
             )
 
         _genre_visuals = {
+            "language":  "warm university language-exchange cafe; multilingual notebooks; students talking over tea",
             "noir":       "rain-soaked neon street at night; wet pavement reflections; shadows",
             "romance":    "dim coastal midnight light; sealed letter; fog and lamplight",
+            "adaptability": "bright campus project room; whiteboards covered in changing plans; collaborative students",
             "lighthouse": "isolated lighthouse at night; crashing dark waves; rotating beam",
             "scifi":      "deep-space relay station interior; blinking terminals; star field",
             "fantasy":    "enchanted forest road; blue fireflies; ancient glowing stone",
+            "study":      "quiet campus study cafe at night; shared notes; presentation rehearsal; warm desk lamps",
             "bakery":     "moonlit bakery interior; warm bread on shelves; glowing oven",
         }
         _visual_context = _genre_visuals.get(profile["kind"], "atmospheric scene; moody lighting")
@@ -1355,8 +1439,16 @@ def _fallback_turn(full_prompt: str, last_consequences: list | None = None) -> d
         location_update = consequence_place
         thread_update = profile["thread"]
         active_characters_update = _active_character_names(context)
-        if not active_characters_update and profile["kind"] == "lighthouse":
-            active_characters_update = ["Mara Venn (boat captain)"]
+        if not active_characters_update:
+            established_characters = {
+                "language": "language-exchange student",
+                "adaptability": "project teammate",
+                "study": "study group member",
+                "lighthouse": "Mara Venn (boat captain)",
+            }
+            established = established_characters.get(profile["kind"])
+            if established:
+                active_characters_update = [established]
 
     _discovered_flags = {}
     _consequence_for_flag = locals().get("consequence", "")

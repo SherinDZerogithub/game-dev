@@ -420,7 +420,7 @@ class NarrativeContextTests(unittest.TestCase):
         self.assertFalse(any("search the kitchen" in choice or "recipe" in choice for choice in choices))
         self.assertTrue(any("leave" in choice or "follow" in choice for choice in choices))
 
-    def test_lighthouse_dialogue_names_the_established_boat_captain(self):
+    def test_flexible_semester_dialogue_names_the_established_teammate(self):
         state = game_engine.deepcopy(game_engine.DEFAULT_STATE)
         state["world_prompt"] = game_engine.LORE_PRESETS[2]["opening"]
         prompt = game_engine._assemble_prompt(
@@ -430,11 +430,11 @@ class NarrativeContextTests(unittest.TestCase):
         result = llm_client._fallback_turn(prompt)
         lower = result["narration"].lower()
 
-        self.assertIn("mara venn", lower)
-        self.assertIn("boat captain", lower)
+        self.assertIn("project teammate", lower)
+        self.assertNotIn("boat captain", lower)
         self.assertNotIn("the listener", lower)
         self.assertIn(
-            "mara venn",
+            "project",
             " ".join(result["narrative_context_updates"]["active_characters"]).lower(),
         )
 
