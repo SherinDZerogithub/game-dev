@@ -63,4 +63,4 @@ jobs:
         with:
           app-name: 'storyteller-ai-lumen'
           slot-name: 'Production'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_3E333F3B3D0A4B95864493A74024B785 }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_30DA3CAF6EB64818BFBFBA12FC1DFBF4 }}
