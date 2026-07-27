@@ -180,6 +180,38 @@
     font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
     color: var(--muted); font-weight: 600;
   }
+  .auth-area { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .titlebar .status + .auth-area { margin-left: 16px; }
+  .auth-btn {
+    border: 1px solid var(--border-strong); background: transparent; color: var(--ink-soft);
+    border-radius: 999px; padding: 7px 13px; font-family: var(--mono); font-size: 11px;
+    font-weight: 600; cursor: pointer; transition: all .2s ease;
+  }
+  .auth-btn:hover { color: var(--ink); background: rgba(255,255,255,.07); }
+  .auth-btn.primary-auth { background: var(--accent); border-color: var(--accent); color: #1a1020; }
+  .auth-btn.primary-auth:hover { background: var(--ink); border-color: var(--ink); }
+  .user-pill { display: flex; align-items: center; gap: 8px; color: var(--ink-soft); font-size: 11px; }
+  .user-avatar { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #1a1020; font-weight: 700; }
+  .account-hint { color: var(--muted); font-size: 11px; border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; background: rgba(255,255,255,.025); }
+  .account-hint strong { color: var(--accent); }
+  .continue-btn { margin-top: 4px; padding-left: 0; }
+  .modal-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 18px; background: rgba(5,6,10,.74); backdrop-filter: blur(10px); }
+  .modal-backdrop[hidden] { display: none; }
+  .auth-modal { width: min(100%, 410px); position: relative; padding: 26px; border: 1px solid var(--border-strong); border-radius: 20px; background: linear-gradient(145deg, rgba(30,32,45,.98), rgba(15,17,25,.98)); box-shadow: var(--shadow); }
+  .auth-modal h2 { font-family: var(--serif); font-size: 27px; margin: 0 0 6px; color: var(--ink); }
+  .auth-modal p { margin: 0 0 20px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+  .modal-close { position: absolute; top: 13px; right: 15px; border: 0; background: transparent; color: var(--muted); font-size: 23px; cursor: pointer; }
+  .auth-form { display: grid; gap: 12px; }
+  .auth-form label { display: grid; gap: 6px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .14em; font-weight: 700; }
+  .auth-form input { width: 100%; border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px; background: rgba(255,255,255,.05); color: var(--ink); font: 13px var(--mono); }
+  .auth-form input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(232,180,208,.14); }
+  .auth-form .primary { width: 100%; justify-content: center; margin-top: 4px; }
+  .auth-switch { border: 0; background: transparent; color: var(--accent); cursor: pointer; font: 12px var(--mono); padding: 4px; }
+  .auth-links { display: flex; justify-content: space-between; gap: 10px; margin-top: 3px; }
+  .auth-status { border-radius: 10px; padding: 10px 12px; background: rgba(157,212,166,.1); border: 1px solid rgba(157,212,166,.35); color: var(--good); font-size: 12px; line-height: 1.45; }
+  .auth-status.error { background: rgba(224,122,138,.1); border-color: var(--danger); color: var(--danger); }
+  .reset-token { margin-top: 8px; word-break: break-all; color: var(--ink); font-family: var(--mono); font-size: 11px; }
+  @media (max-width: 600px) { .titlebar { flex-wrap: wrap; } .titlebar .status { margin-left: 0; } .titlebar .status + .auth-area { margin-left: auto; } .user-pill span { display: none; } }
   .pulse-dot {
     width: 8px; height: 8px; border-radius: 50%;
     background: var(--good);
@@ -718,6 +750,10 @@
       <span>Lumen<small>AI Storyteller</small></span>
     </div>
     <div class="status"><span class="pulse-dot"></span> narrator online</div>
+    <div class="auth-area" id="authArea">
+      <button class="auth-btn" id="loginBtn">Log in</button>
+      <button class="auth-btn primary-auth" id="signupBtn">Sign up</button>
+    </div>
   </div>
 
   <!-- LAYOUT -->
@@ -734,6 +770,7 @@
         </div>
 
         <div>
+          <div class="account-hint" id="accountHint">Playing as a guest. <strong>Sign up</strong> to keep your story preferences between visits.</div>
           <div class="field-label">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
             Choose a starting world
@@ -861,6 +898,16 @@
   </div><!-- /layout -->
 </div><!-- /frame -->
 
+<div class="modal-backdrop" id="authModal" hidden>
+  <div class="auth-modal" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+    <button class="modal-close" id="authClose" aria-label="Close">&times;</button>
+    <h2 id="authTitle">Welcome back</h2>
+    <p id="authSubtitle">Sign in to keep your stories and let Lumen learn your favorite kinds of adventure.</p>
+    <div id="authStatus" aria-live="polite"></div>
+    <form class="auth-form" id="authForm"></form>
+  </div>
+</div>
+
 <script>
 // ============================================================
 // CONFIG
@@ -925,6 +972,11 @@ const invList = $('invList'); const statsBlock = $('statsBlock'); const flagList
 const characterDisplay = $('characterDisplay'); const characterSub = $('characterSub');
 const twistModeDisplay = $('twistModeDisplay'); const twistChance = $('twistChance');
 const turnCount = $('turnCount'); const presetsEl = $('presets'); const openingEl = $('opening');
+const authArea = $('authArea'); const accountHint = $('accountHint');
+const authModal = $('authModal'); const authForm = $('authForm'); const authTitle = $('authTitle');
+const authSubtitle = $('authSubtitle'); const authStatus = $('authStatus');
+let currentUser = null;
+let authMode = 'login';
 
 // ============================================================
 // HELPERS
@@ -980,6 +1032,189 @@ function normalizeChoices(rawChoices) {
   }));
   return choices;
 }
+
+// ============================================================
+// ACCOUNT FLOW
+// ============================================================
+function setAuthStatus(message = '', isError = false) {
+  authStatus.className = message ? `auth-status${isError ? ' error' : ''}` : '';
+  authStatus.innerHTML = message ? message : '';
+}
+
+function renderAuthForm(mode, values = {}) {
+  authMode = mode;
+  setAuthStatus('');
+  const titles = {
+    login: ['Welcome back', 'Sign in to keep your stories and let Lumen learn your favorite kinds of adventure.'],
+    signup: ['Create your account', 'Your stories remain yours, and your preferences improve the experience over time.'],
+    forgot: ['Reset your password', 'Enter your email and we will prepare a one-time reset link.'],
+    reset: ['Choose a new password', 'Reset links expire after 30 minutes and can only be used once.'],
+  };
+  [authTitle.textContent, authSubtitle.textContent] = titles[mode];
+  if (mode === 'login') {
+    authForm.innerHTML = `
+      <label>Email<input name="email" type="email" autocomplete="email" required maxlength="200"></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="200"></label>
+      <button class="primary" type="submit">Log in</button>
+      <div class="auth-links"><button class="auth-switch" type="button" data-auth-mode="forgot">Forgot password?</button><button class="auth-switch" type="button" data-auth-mode="signup">Create account</button></div>`;
+  } else if (mode === 'signup') {
+    authForm.innerHTML = `
+      <label>Display name<input name="display_name" type="text" autocomplete="name" required maxlength="60"></label>
+      <label>Email<input name="email" type="email" autocomplete="email" required maxlength="200"></label>
+      <label>Password<input name="password" type="password" autocomplete="new-password" minlength="10" required maxlength="200"><small>Use at least 10 characters.</small></label>
+      <label>Confirm password<input name="confirm_password" type="password" autocomplete="new-password" minlength="10" required maxlength="200"></label>
+      <button class="primary" type="submit">Sign up</button>
+      <div class="auth-links"><span></span><button class="auth-switch" type="button" data-auth-mode="login">Already have an account?</button></div>`;
+  } else if (mode === 'forgot') {
+    authForm.innerHTML = `
+      <label>Email<input name="email" type="email" autocomplete="email" required maxlength="200"></label>
+      <button class="primary" type="submit">Prepare reset link</button>
+      <div class="auth-links"><span></span><button class="auth-switch" type="button" data-auth-mode="login">Back to log in</button></div>`;
+  } else {
+    authForm.innerHTML = `
+      <label>Reset token<input name="token" type="text" required maxlength="300" value="${escapeHtml(values.token || '')}"></label>
+      <label>New password<input name="password" type="password" autocomplete="new-password" minlength="10" required maxlength="200"></label>
+      <label>Confirm password<input name="confirm_password" type="password" autocomplete="new-password" minlength="10" required maxlength="200"></label>
+      <button class="primary" type="submit">Reset password</button>`;
+  }
+  authForm.querySelectorAll('[data-auth-mode]').forEach(button => {
+    button.addEventListener('click', () => renderAuthForm(button.dataset.authMode));
+  });
+}
+
+async function loadLatestStory() {
+  if (!currentUser) return;
+  try {
+    const res = await fetch(`${API_BASE}/games`, { credentials: 'include' });
+    if (!res.ok) return;
+    const games = (await res.json()).games || [];
+    if (!games.length || sessionId) return;
+    const latest = games[0];
+    accountHint.innerHTML += `<br><button class="auth-switch continue-btn" id="resumeLatestBtn">Continue your latest story · turn ${Number(latest.turn_count || 0)}</button>`;
+    $('resumeLatestBtn').addEventListener('click', () => resumeStory(latest.session_id));
+  } catch (e) { /* saved stories are optional */ }
+}
+
+async function resumeStory(savedSessionId) {
+  try {
+    const res = await fetch(`${API_BASE}/game/${encodeURIComponent(savedSessionId)}`, { credentials: 'include' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
+    resetStorySurface(false);
+    sessionId = data.session_id;
+    setupEl.style.display = 'none';
+    storyEl.classList.add('visible');
+    renderSidebar(data.state);
+    logEl.innerHTML = '';
+    const history = data.history || [];
+    const narratorEntries = history.filter(entry => entry.role === 'narrator');
+    let narratorIndex = 0;
+    history.forEach(entry => {
+      if (entry.role === 'player') {
+        const line = document.createElement('div');
+        line.className = 'player-line';
+        line.innerHTML = `<span>${escapeHtml(String(entry.text || '').replace(/^\(Game start\)\s*/, ''))}</span>`;
+        logEl.appendChild(line);
+      } else if (entry.role === 'narrator') {
+        narratorIndex += 1;
+        renderScene({
+          narration: entry.text,
+          choices_hint: narratorIndex === narratorEntries.length ? (data.state.last_choices || []) : [],
+          image_path: narratorIndex === narratorEntries.length ? data.state.last_scene_image : null,
+          ambient_path: narratorIndex === narratorEntries.length ? data.state.ambient_background : null,
+          game_over: narratorIndex === narratorEntries.length && data.state.game_over,
+        }, false, false);
+      }
+    });
+    scrollLogBottom();
+  } catch (error) {
+    accountHint.innerHTML += `<div class="auth-status error">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function updateAuthUi() {
+  if (!currentUser) {
+    authArea.innerHTML = '<button class="auth-btn" id="loginBtn">Log in</button><button class="auth-btn primary-auth" id="signupBtn">Sign up</button>';
+    accountHint.innerHTML = 'Playing as a guest. <strong>Sign up</strong> to keep your story preferences between visits.';
+    $('loginBtn').addEventListener('click', () => openAuthModal('login'));
+    $('signupBtn').addEventListener('click', () => openAuthModal('signup'));
+    return;
+  }
+  const initial = escapeHtml((currentUser.display_name || 'U').slice(0, 1).toUpperCase());
+  authArea.innerHTML = `<div class="user-pill"><span class="user-avatar">${initial}</span><span>${escapeHtml(currentUser.display_name)}</span></div><button class="auth-btn" id="logoutBtn">Log out</button>`;
+  const profile = currentUser.story_profile || {};
+  const turns = Number(profile.turns_played || 0);
+  accountHint.innerHTML = turns
+    ? `<strong>${escapeHtml(currentUser.display_name)}</strong> — Lumen is remembering your tastes across ${turns} story turn${turns === 1 ? '' : 's'}.`
+    : `<strong>${escapeHtml(currentUser.display_name)}</strong> — your story preferences will grow as you play.`;
+  $('logoutBtn').addEventListener('click', logoutUser);
+  loadLatestStory();
+}
+
+function openAuthModal(mode = 'login', values = {}) {
+  renderAuthForm(mode, values);
+  authModal.hidden = false;
+  setTimeout(() => authForm.querySelector('input')?.focus(), 0);
+}
+
+function closeAuthModal() { authModal.hidden = true; }
+
+async function submitAuth(event) {
+  event.preventDefault();
+  const form = new FormData(authForm);
+  const data = Object.fromEntries(form.entries());
+  if ((authMode === 'signup' || authMode === 'reset') && data.password !== data.confirm_password) {
+    setAuthStatus('Passwords do not match.', true); return;
+  }
+  const endpoints = { login: '/auth/login', signup: '/auth/signup', forgot: '/auth/forgot-password', reset: '/auth/reset-password' };
+  const body = { ...data };
+  delete body.confirm_password;
+  const submitButton = authForm.querySelector('button[type="submit"]');
+  if (submitButton) submitButton.disabled = true;
+  try {
+    const res = await fetch(`${API_BASE}${endpoints[authMode]}`, {
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(result.detail || `Request failed (${res.status})`);
+    if (authMode === 'forgot') {
+      if (result.reset_token) {
+        setAuthStatus(`${escapeHtml(result.message)}<div class="reset-token">Local reset token: ${escapeHtml(result.reset_token)}</div>`);
+        renderAuthForm('reset', { token: result.reset_token });
+        setAuthStatus('Your one-time reset token is ready below.');
+      } else setAuthStatus(escapeHtml(result.message));
+      return;
+    }
+    currentUser = result.user;
+    updateAuthUi();
+    closeAuthModal();
+  } catch (error) {
+    setAuthStatus(escapeHtml(error.message), true);
+  } finally {
+    if (submitButton) submitButton.disabled = false;
+  }
+}
+
+async function loadCurrentUser() {
+  try {
+    const res = await fetch(`${API_BASE}/auth/me`, { credentials: 'include' });
+    const result = await res.json();
+    currentUser = result.user || null;
+    updateAuthUi();
+  } catch (e) { /* guest mode remains available */ }
+}
+
+async function logoutUser() {
+  await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {});
+  currentUser = null;
+  if (sessionId) resetStorySurface(true);
+  updateAuthUi();
+}
+
+authForm.addEventListener('submit', submitAuth);
+$('authClose').addEventListener('click', closeAuthModal);
+authModal.addEventListener('click', event => { if (event.target === authModal) closeAuthModal(); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape') closeAuthModal(); });
 
 // ============================================================
 // PRESETS
@@ -1228,7 +1463,7 @@ async function handlePlayerInput(text) {
 
   try {
     const res = await fetch(`${API_BASE}/turn`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId, player_input: text.trim() })
     });
     thinking.remove();
@@ -1306,7 +1541,7 @@ async function startGame() {
     const opening = openingEl.value;
 
     const res = await fetch(`${API_BASE}/start`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         opening_prompt: opening, chaos_mode: chaosMode,
         character_class: charClass, difficulty
@@ -1362,6 +1597,7 @@ clearLogBtn.addEventListener('click', () => {
 // INIT
 // ============================================================
 loadPresets();
+loadCurrentUser();
 console.log('%cLumen · AI Storyteller loaded', 'color:#e8b4d0; font-weight:bold;');
 </script>
 </body>

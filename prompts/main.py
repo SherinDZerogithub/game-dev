@@ -18,15 +18,17 @@ Endpoints:
 
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from . import db
 from . import game_engine
+from . import auth
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +90,158 @@ class TurnRequest(BaseModel):
     player_input: str = Field(min_length=1, max_length=3000)
 
 
+class SignupRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=200)
+    password: str = Field(min_length=10, max_length=200)
+    display_name: str = Field(min_length=1, max_length=60)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=200)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=200)
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=300)
+    password: str = Field(min_length=10, max_length=200)
+
+
+SESSION_COOKIE = "lumen_session"
+SESSION_DAYS = 30
+
+
+def _normalise_email(email: str) -> str:
+    value = email.strip().lower()
+    if "@" not in value or "." not in value.rsplit("@", 1)[-1]:
+        raise HTTPException(status_code=422, detail="Enter a valid email address")
+    return value
+
+
+def _public_user(user: dict) -> dict:
+    profile = db.get_story_profile(user["user_id"])
+    return {
+        "user_id": user["user_id"],
+        "email": user["email"],
+        "display_name": user["display_name"],
+        "story_profile": profile,
+    }
+
+
+def _set_session_cookie(response: Response, user_id: int):
+    token = auth.new_token()
+    expires_at = (datetime.utcnow() + timedelta(days=SESSION_DAYS)).isoformat()
+    db.save_auth_session(auth.token_hash(token), user_id, expires_at)
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=SESSION_DAYS * 24 * 60 * 60,
+        httponly=True,
+        samesite="lax",
+        secure=os.getenv("LUMEN_SECURE_COOKIES", "0") == "1",
+    )
+
+
+def _current_user(request: Request):
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return None
+    return db.get_user_by_session(auth.token_hash(token))
+
+
+def _require_game_access(session_id: str, request: Request):
+    saved = game_engine.load_session(session_id)
+    if saved is None:
+        raise HTTPException(status_code=404, detail=f"No game found for session_id={session_id}")
+    user = _current_user(request)
+    owner_id = saved.get("user_id")
+    if owner_id is not None and (user is None or int(user["user_id"]) != int(owner_id)):
+        raise HTTPException(status_code=403, detail="This story belongs to another account")
+    return user
+
+
+def _require_user(request: Request) -> dict:
+    user = _current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in to access saved stories")
+    return user
+
+
+# ---------------------------------------------------------------------------
+# AUTHENTICATION
+# ---------------------------------------------------------------------------
+@app.get("/auth/me")
+def auth_me(request: Request):
+    user = _current_user(request)
+    return {"user": _public_user(user) if user else None}
+
+
+@app.post("/auth/signup")
+def signup(req: SignupRequest, response: Response):
+    email = _normalise_email(req.email)
+    display_name = " ".join(req.display_name.strip().split())
+    if not display_name:
+        raise HTTPException(status_code=422, detail="Enter a display name")
+    try:
+        user = db.create_user(email, display_name, auth.hash_password(req.password))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _set_session_cookie(response, user["user_id"])
+    return {"user": _public_user(user)}
+
+
+@app.post("/auth/login")
+def login(req: LoginRequest, response: Response):
+    email = _normalise_email(req.email)
+    user = db.get_user_by_email(email)
+    if not user or not auth.verify_password(req.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Email or password is incorrect")
+    _set_session_cookie(response, user["user_id"])
+    return {"user": _public_user(user)}
+
+
+@app.post("/auth/logout")
+def logout(request: Request, response: Response):
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        db.delete_auth_session(auth.token_hash(token))
+    response.delete_cookie(SESSION_COOKIE)
+    return {"ok": True}
+
+
+@app.post("/auth/forgot-password")
+def forgot_password(req: ForgotPasswordRequest):
+    email = _normalise_email(req.email)
+    user = db.get_user_by_email(email)
+    reset_token = None
+    if user:
+        reset_token = auth.new_token()
+        expires_at = (datetime.utcnow() + timedelta(minutes=30)).isoformat()
+        db.create_password_reset(auth.token_hash(reset_token), user["user_id"], expires_at)
+    result = {
+        "message": "If an account exists for that email, a reset link has been prepared.",
+    }
+    # There is no email provider in this self-contained project. Returning a
+    # one-time token keeps the local demo usable; production should email it.
+    if reset_token and os.getenv("LUMEN_SHOW_RESET_TOKEN", "1") == "1":
+        result["reset_token"] = reset_token
+    return result
+
+
+@app.post("/auth/reset-password")
+def reset_password(req: ResetPasswordRequest, response: Response):
+    user_id = db.consume_password_reset(auth.token_hash(req.token.strip()))
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="That reset link is invalid or expired")
+    db.update_password(user_id, auth.hash_password(req.password))
+    user = db.get_user(user_id)
+    _set_session_cookie(response, user_id)
+    return {"user": _public_user(user)}
+
+
 # ---------------------------------------------------------------------------
 # PRESETS
 # ---------------------------------------------------------------------------
@@ -101,33 +255,44 @@ def presets():
 # GAME ENDPOINTS
 # ---------------------------------------------------------------------------
 @app.post("/start")
-def start_game(req: StartRequest):
+def start_game(req: StartRequest, request: Request):
     """Start a new game."""
     opening_prompt = req.opening_prompt.strip()
     if not opening_prompt:
         raise HTTPException(status_code=422, detail="opening_prompt must contain text")
     try:
+        user = _current_user(request)
         return game_engine.new_game(
             opening_prompt=opening_prompt,
             chaos_mode=req.chaos_mode,
             custom_state=req.custom_state,
             character_class=req.character_class,
             difficulty=req.difficulty,
+            user_id=user["user_id"] if user else None,
         )
     except (RuntimeError, ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.get("/games")
+def list_games(request: Request):
+    """List the current user's saved stories, newest first."""
+    user = _require_user(request)
+    return {"games": db.list_user_games(user["user_id"])}
+
+
 @app.post("/turn")
-def take_turn(req: TurnRequest):
+def take_turn(req: TurnRequest, request: Request):
     """Submit one player action."""
     player_input = req.player_input.strip()
     if not player_input:
         raise HTTPException(status_code=422, detail="player_input must contain text")
     try:
+        user = _require_game_access(req.session_id.strip(), request)
         return game_engine.take_turn(
             session_id=req.session_id.strip(),
             player_input=player_input,
+            user_id=user["user_id"] if user else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -136,9 +301,10 @@ def take_turn(req: TurnRequest):
 
 
 @app.get("/game/{session_id}")
-def get_game(session_id: str):
+def get_game(session_id: str, request: Request):
     """Fetch a saved game."""
     try:
+        _require_game_access(session_id.strip(), request)
         return game_engine.get_game(session_id.strip())
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

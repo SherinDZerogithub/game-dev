@@ -17,6 +17,11 @@ from . import db
 from . import image_gen
 from . import llm_client
 
+# Guest stories live only for the lifetime of this server process. They are
+# intentionally not written to SQLite and disappear when the guest leaves or
+# the server restarts.
+_GUEST_GAMES: dict[str, dict] = {}
+
 # -----------------------------
 # LOAD SYSTEM PROMPT
 # -----------------------------
@@ -156,6 +161,13 @@ DEFAULT_STATE = {
     "ambient_background": None,
     "character_class": "",
     "difficulty": "Balanced",
+    "personalization": {
+        "sessions_started": 0,
+        "turns_played": 0,
+        "genres": {},
+        "archetypes": {},
+        "pacing": {},
+    },
     "narrative_context": {
         "location": "",
         "active_characters": [],
@@ -308,6 +320,24 @@ def _assemble_prompt(
     if state.get("difficulty"):
         difficulty_line = f"\nDifficulty pacing: {state['difficulty']}\n"
 
+    profile = state.get("personalization", {})
+    profile_line = ""
+    if profile and profile.get("sessions_started", 0):
+        genres = profile.get("genres", {})
+        archetypes = profile.get("archetypes", {})
+        pacing = profile.get("pacing", {})
+        favorite_genre = max(genres, key=genres.get) if genres else ""
+        favorite_archetype = max(archetypes, key=archetypes.get) if archetypes else ""
+        favorite_pacing = max(pacing, key=pacing.get) if pacing else ""
+        profile_line = (
+            "\n[PLAYER PREFERENCE MEMORY]\n"
+            f"This returning player has completed {profile.get('turns_played', 0)} prior turns. "
+            f"They often enjoy {favorite_genre or 'varied worlds'}"
+            f"{f', especially when playing as {favorite_archetype}' if favorite_archetype else ''}. "
+            f"Their usual pacing is {favorite_pacing or 'balanced'}. "
+            "Personalize the tone and optional choices subtly; do not mention this memory or force a genre.\n"
+        )
+
     location_text = narrative_context.get("location", "") or "Unknown"
 
     banned_phrases_instruction = ""
@@ -364,7 +394,7 @@ ALREADY DISCOVERED (FLAG GUARD):
 
     return f"""
 {SYSTEM_PROMPT}
-{character_line}{difficulty_line}
+{character_line}{difficulty_line}{profile_line}
 [WORLD PREMISE / PLAYER-GIVEN PROMPT]
 {state.get("world_prompt", "") or "Use the opening scenario and recent story as the world premise."}
 
@@ -854,12 +884,18 @@ def list_presets() -> list:
     return deepcopy(LORE_PRESETS)
 
 
+def load_session(session_id: str):
+    """Load a persistent account game or a temporary in-memory guest game."""
+    return db.load_game(session_id) or _GUEST_GAMES.get(session_id)
+
+
 def new_game(
     opening_prompt: str,
     chaos_mode: bool = False,
     custom_state: dict | None = None,
     character_class: str = "",
     difficulty: str = "Balanced",
+    user_id: int | None = None,
 ) -> dict:
     """Create, generate, persist, and return a new game session."""
     if not isinstance(opening_prompt, str) or not opening_prompt.strip():
@@ -871,6 +907,8 @@ def new_game(
     state["world_prompt"] = opening_prompt.strip()
     state["character_class"] = character_class.strip() if isinstance(character_class, str) else ""
     state["difficulty"] = difficulty.strip() if isinstance(difficulty, str) else "Balanced"
+    if user_id is not None:
+        state["personalization"] = db.get_story_profile(user_id)
 
     _apply_custom_state(state, custom_state)
     _ensure_state_shape(state)
@@ -892,7 +930,16 @@ def new_game(
         {"role": "narrator", "text": scene["narration"]},
     ]
 
-    db.save_game(session_id, state, history)
+    if user_id is None:
+        _GUEST_GAMES[session_id] = {"state": state, "history": history, "user_id": None}
+    else:
+        db.save_game(session_id, state, history, user_id=user_id)
+        db.record_story_usage(
+            user_id,
+            opening_prompt=opening_prompt,
+            character_class=state["character_class"],
+            difficulty=state["difficulty"],
+        )
 
     return {
         "session_id": session_id,
@@ -901,13 +948,15 @@ def new_game(
     }
 
 
-def take_turn(session_id: str, player_input: str) -> dict:
+def take_turn(session_id: str, player_input: str, user_id: int | None = None) -> dict:
     """Process one player action and persist the resulting game state."""
     if not isinstance(player_input, str) or not player_input.strip():
         raise ValueError("player_input must contain non-whitespace text")
-    saved = db.load_game(session_id)
+    saved = load_session(session_id)
     if saved is None:
         raise ValueError(f"No game found for session_id={session_id}")
+    if saved.get("user_id") is not None and saved.get("user_id") != user_id:
+        raise ValueError("This story belongs to another account")
 
     state = saved["state"]
     history = saved["history"]
@@ -969,7 +1018,12 @@ def take_turn(session_id: str, player_input: str) -> dict:
         # entries caused the LLM to lose scene continuity.
         history = history[-HISTORY_KEEP_AFTER_SUMMARY:]
 
-    db.save_game(session_id, state, history)
+    if saved.get("user_id") is None:
+        _GUEST_GAMES[session_id] = {"state": state, "history": history, "user_id": None}
+    else:
+        db.save_game(session_id, state, history, user_id=saved.get("user_id"))
+    if user_id is not None and saved.get("user_id") is not None:
+        db.record_story_usage(user_id, turn=True)
 
     return {
         "session_id": session_id,
@@ -981,7 +1035,7 @@ def take_turn(session_id: str, player_input: str) -> dict:
 
 def get_game(session_id: str) -> dict:
     """Return a saved session's current state and retained history."""
-    saved = db.load_game(session_id)
+    saved = load_session(session_id)
     if saved is None:
         raise ValueError(f"No game found for session_id={session_id}")
 

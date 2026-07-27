@@ -40,6 +40,8 @@ themes. Designed for showcasing in a portfolio and on LinkedIn.
 - **Image generation:** Pollinations free image API (no key), with optional Gemini
 - **Persistence:** SQLite
 - **Frontend:** single-file HTML + CSS + vanilla JS (glassmorphism, inline SVG icons)
+- **Accounts:** server-side scrypt password hashes, HttpOnly sessions, one-time reset tokens, and per-user story preferences
+- **Guest mode:** unsigned-in players can play normally, but guest story state stays in server memory only and is never written to SQLite
 
 ---
 
@@ -73,6 +75,12 @@ before Pollinations.
 The single-key variables `GROQ_API_KEY` and `GEMINI_API_KEY` also work.
 Never commit `prompts/.env` or paste real keys into source code.
 
+Accounts work out of the box with the same SQLite database. Passwords are
+never stored directly. For a real deployment, set `LUMEN_SECURE_COOKIES=1`
+behind HTTPS and connect `/auth/forgot-password` to an email provider; the
+current self-contained demo returns a one-time reset token so it can be tested
+without an email service.
+
 ---
 
 ## Run
@@ -90,7 +98,14 @@ Open http://localhost:8000 — the frontend is served from `/`.
 | Method | Path                   | Purpose                                  |
 |--------|------------------------|------------------------------------------|
 | GET    | `/presets`             | Curated opening worlds                   |
+| POST   | `/auth/signup`         | Create an account                        |
+| POST   | `/auth/login`          | Start a secure browser session           |
+| POST   | `/auth/logout`         | End the browser session                  |
+| POST   | `/auth/forgot-password`| Prepare a one-time reset token           |
+| POST   | `/auth/reset-password` | Set a new password                       |
+| GET    | `/auth/me`             | Return the current account and preferences |
 | POST   | `/start`               | Start a new game                         |
+| GET    | `/games`               | List the signed-in user's saved games   |
 | POST   | `/turn`                | Submit a player action                   |
 | GET    | `/game/{session_id}`   | Fetch a saved game                       |
 | GET    | `/scene-image?path=`   | Serve a generated scene image            |
